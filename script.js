@@ -8,12 +8,197 @@ let finalSpeechTranscript = '';
 let shouldIgnoreSpeechResults = false;
 let speechErrorMessage = '';
 let speechStatusTimer = null;
+let activeConversationId = null;
+let conversations = [];
+let conversationSidebarOpen = false;
+let isCreatingConversation = false;
+let isSendingMessage = false;
 const PASSWORD_REVEAL_DURATION = 400;
 const passwordInputStates = new WeakMap();
 
 function getFirstName(name) {
     const nameParts = String(name || '').trim().split(/\s+/);
     return nameParts[0] || 'there';
+}
+
+function sortConversations() {
+    conversations.sort((first, second) => Number(second.updated_at || 0) - Number(first.updated_at || 0));
+}
+
+function setConversationStatus(message = '') {
+    const status = document.getElementById('conversationSidebarStatus');
+    if (status) status.textContent = message;
+}
+
+function getActiveConversation() {
+    return conversations.find((conversation) => conversation.id === activeConversationId) || null;
+}
+
+function updateActiveConversationTitle() {
+    const title = getActiveConversation()?.title || 'New chat';
+    const titleElement = document.getElementById('activeConversationTitle');
+    if (titleElement) titleElement.textContent = title;
+}
+
+function renderConversationList() {
+    const list = document.getElementById('conversationList');
+    if (!list) return;
+
+    list.replaceChildren();
+
+    if (!conversations.length) {
+        const emptyState = document.createElement('p');
+        emptyState.className = 'conversation-list-empty';
+        emptyState.textContent = 'No conversations yet.';
+        list.appendChild(emptyState);
+        updateActiveConversationTitle();
+        return;
+    }
+
+    conversations.forEach((conversation) => {
+        const button = document.createElement('button');
+        const title = document.createElement('span');
+        const isActive = conversation.id === activeConversationId;
+
+        button.type = 'button';
+        button.className = `conversation-item${isActive ? ' is-active' : ''}`;
+        button.title = conversation.title;
+        button.setAttribute('aria-current', isActive ? 'page' : 'false');
+        button.addEventListener('click', () => selectConversation(conversation.id));
+
+        title.className = 'conversation-item-title';
+        title.textContent = conversation.title;
+        button.appendChild(title);
+        list.appendChild(button);
+    });
+
+    updateActiveConversationTitle();
+}
+
+function upsertConversation(conversation) {
+    if (!conversation?.id) return;
+
+    const conversationIndex = conversations.findIndex((item) => item.id === conversation.id);
+    if (conversationIndex === -1) {
+        conversations.push(conversation);
+    } else {
+        conversations[conversationIndex] = conversation;
+    }
+
+    sortConversations();
+    renderConversationList();
+}
+
+function isCompactSidebar() {
+    return window.matchMedia('(max-width: 760px)').matches;
+}
+
+function setConversationSidebarOpen(shouldOpen) {
+    conversationSidebarOpen = Boolean(shouldOpen);
+
+    const chatApp = document.getElementById('chatApp');
+    const sidebar = document.getElementById('conversationSidebar');
+    const toggle = document.getElementById('conversationSidebarToggle');
+
+    if (chatApp) chatApp.classList.toggle('is-sidebar-open', conversationSidebarOpen);
+    if (sidebar) sidebar.setAttribute('aria-hidden', String(!conversationSidebarOpen));
+    if (toggle) {
+        const label = conversationSidebarOpen ? 'Close conversations' : 'Open conversations';
+        toggle.setAttribute('aria-expanded', String(conversationSidebarOpen));
+        toggle.setAttribute('aria-label', label);
+        toggle.title = label;
+    }
+}
+
+function toggleConversationSidebar() {
+    setConversationSidebarOpen(!conversationSidebarOpen);
+}
+
+async function loadConversations() {
+    if (!activeUserId) return [];
+
+    const response = await fetch(`/api/conversations?user_id=${encodeURIComponent(activeUserId)}`);
+    const data = await response.json();
+    if (!response.ok || data.error) {
+        throw new Error(data.error || 'Failed to load conversations.');
+    }
+
+    conversations = Array.isArray(data.conversations) ? data.conversations : [];
+    sortConversations();
+    renderConversationList();
+    setConversationStatus('');
+    return conversations;
+}
+
+async function initializeConversations() {
+    const signedInUserId = activeUserId;
+
+    try {
+        const loadedConversations = await loadConversations();
+        if (activeUserId !== signedInUserId) return;
+
+        if (!loadedConversations.length) {
+            await createNewChat();
+            return;
+        }
+
+        await selectConversation(loadedConversations[0].id, false);
+    } catch (error) {
+        console.error('Failed to initialize conversations', error);
+        setConversationStatus('Unable to load your conversations. Please try again.');
+    }
+}
+
+async function createNewChat() {
+    if (!activeUserId || isCreatingConversation) return;
+
+    const requestedUserId = activeUserId;
+    const newChatButton = document.getElementById('newChatBtn');
+    isCreatingConversation = true;
+    if (newChatButton) newChatButton.disabled = true;
+    setConversationStatus('');
+
+    try {
+        const response = await fetch('/api/conversations', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_id: requestedUserId })
+        });
+        const data = await response.json();
+        if (!response.ok || data.error || !data.conversation) {
+            throw new Error(data.error || 'Failed to create a new chat.');
+        }
+        if (activeUserId !== requestedUserId) return;
+
+        activeConversationId = data.conversation.id;
+        upsertConversation(data.conversation);
+        await loadUserHistory(activeConversationId);
+
+        if (isCompactSidebar()) {
+            setConversationSidebarOpen(false);
+        }
+    } catch (error) {
+        console.error('Failed to create a new chat', error);
+        setConversationStatus('Unable to create a new chat. Please try again.');
+    } finally {
+        isCreatingConversation = false;
+        if (newChatButton) newChatButton.disabled = false;
+    }
+}
+
+async function selectConversation(conversationId, closeCompactSidebar = true) {
+    if (!conversationId || !activeUserId) return;
+
+    stopSpeechRecognition(true);
+    activeConversationId = conversationId;
+    renderConversationList();
+    setConversationStatus('');
+
+    if (closeCompactSidebar && isCompactSidebar()) {
+        setConversationSidebarOpen(false);
+    }
+
+    await loadUserHistory(conversationId);
 }
 
 function getPasswordInputState(input) {
@@ -501,14 +686,14 @@ async function signIn() {
         activeUserId = data.user_id;
         activeUserName = data.name;
         document.getElementById('authScreen').style.display = 'none';
-        document.getElementById('chatScreen').style.display = 'flex';
+        document.getElementById('chatApp').style.display = 'flex';
         document.getElementById('headerUserName').innerText = data.name;
         
         document.getElementById('name').value = '';
         document.getElementById('email').value = '';
         clearPasswordInput(document.getElementById('password'));
         
-        loadUserHistory();
+        initializeConversations();
     }
 }
 
@@ -652,11 +837,21 @@ function replayWelcomeAnimation() {
 function performSignOut() {
     stopSpeechRecognition(true);
 
-    // 2. Clear the active session
+    // 2. Clear the active session and its conversation state.
     activeUserId = null;
+    activeUserName = '';
+    activeConversationId = null;
+    conversations = [];
+    isCreatingConversation = false;
+    isSendingMessage = false;
+    setConversationSidebarOpen(false);
+    renderConversationList();
+    setConversationStatus('');
+    document.getElementById('chatBox').replaceChildren();
+    document.getElementById('headerUserName').textContent = 'Loading...';
     
     // 3. Flip the screens back
-    document.getElementById('chatScreen').style.display = 'none';
+    document.getElementById('chatApp').style.display = 'none';
     document.getElementById('authScreen').style.display = 'flex';
     replayWelcomeAnimation();
 
@@ -673,27 +868,41 @@ function performSignOut() {
     eyeOpen.style.display = 'block';
     eyeClosed.style.display = 'none';
     
-    // 6. Hide any lingering error messages or popups
+    // 6. Hide any lingering error messages or popups.
     hideMessages();
 }
 
-async function loadUserHistory() {
-    document.getElementById('chatBox').innerHTML = ''; 
+async function loadUserHistory(conversationId = activeConversationId) {
+    if (!activeUserId || !conversationId) return;
+
+    const requestedUserId = activeUserId;
+    const chatBox = document.getElementById('chatBox');
+    chatBox.replaceChildren();
+
     try {
-        const response = await fetch(`/api/history?user_id=${activeUserId}`);
+        const response = await fetch(`/api/history?user_id=${encodeURIComponent(requestedUserId)}&conversation_id=${encodeURIComponent(conversationId)}`);
         const data = await response.json();
-        if (data.history) {
-            data.history.forEach(msg => {
-                appendMessage(msg.content[0].text, msg.role);
-            });
+        if (!response.ok || data.error) {
+            throw new Error(data.error || 'Failed to load this conversation.');
         }
+        if (activeUserId !== requestedUserId || activeConversationId !== conversationId) {
+            return;
+        }
+
+        data.history?.forEach((message) => {
+            appendMessage(message.content[0].text, message.role);
+        });
     }
-    catch (err) {
-        console.error("Failed to load history", err);
+    catch (error) {
+        console.error('Failed to load history', error);
+        if (activeUserId === requestedUserId && activeConversationId === conversationId) {
+            setConversationStatus('Unable to load this conversation. Please try again.');
+        }
     }
 }
 
 function clearChat() {
+    if (!activeConversationId) return;
     document.getElementById('clearChatModal').style.display = 'flex';
 }
 
@@ -703,55 +912,81 @@ function closeClearChatModal() {
 
 async function confirmClearChat() {
     closeClearChatModal();
+    if (!activeConversationId) return;
 
-    await fetch('/api/clear', { 
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: activeUserId })
-    }).catch(err => {
-            console.error("Failed to clear backend history:", err);
+    const conversationId = activeConversationId;
+
+    try {
+        const response = await fetch('/api/clear', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_id: activeUserId, conversation_id: conversationId })
         });
+        const data = await response.json();
+        if (!response.ok || data.error) {
+            throw new Error(data.error || 'Failed to clear this conversation.');
+        }
 
-    document.getElementById('chatBox').innerHTML = '';
-
-    appendMessage(`Hello ${getFirstName(activeUserName)}! How can I help you today?`, `assistant`);
-
+        upsertConversation(data.conversation);
+        if (activeConversationId === conversationId) {
+            await loadUserHistory(conversationId);
+        }
+    } catch (error) {
+        console.error('Failed to clear conversation', error);
+        setConversationStatus('Unable to clear this conversation. Please try again.');
+    }
 }
 
 async function sendMessage() {
-
     stopSpeechRecognition(true);
 
     const inputElement = document.getElementById('userInput');
-    const chatBox = document.getElementById('chatBox');
     const messageText = inputElement.value.trim();
 
-    if (!messageText) return;
+    if (!messageText || isSendingMessage) return;
+
+    if (!activeConversationId) {
+        await createNewChat();
+        if (!activeConversationId) return;
+    }
+
+    const conversationId = activeConversationId;
+    const chatBox = document.getElementById('chatBox');
+    isSendingMessage = true;
 
     appendMessage(messageText, 'user');
     inputElement.value = '';
-    const loadingDiv = appendMessage("Thinking...", 'assistant');
+    const loadingDiv = appendMessage('Thinking...', 'assistant');
 
     try {
         const response = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: messageText, user_id: activeUserId }) 
+            body: JSON.stringify({
+                message: messageText,
+                user_id: activeUserId,
+                conversation_id: conversationId
+            })
         });
         const data = await response.json();
-        if (data.reply) {
-            loadingDiv.innerText = data.reply;
+        if (data.conversation) {
+            upsertConversation(data.conversation);
         }
-        else {
-            loadingDiv.innerText = "Error: " + (data.error || "Failed to get response");
-        }
+        if (activeConversationId !== conversationId) return;
+
+        loadingDiv.innerText = data.reply || `Error: ${data.error || 'Failed to get response'}`;
     }
-    catch (err) {
-        loadingDiv.innerText = "Error connecting to server.";
+    catch (error) {
+        if (activeConversationId === conversationId) {
+            loadingDiv.innerText = 'Error connecting to server.';
+        }
+    } finally {
+        isSendingMessage = false;
     }
 
-    chatBox.scrollTop = chatBox.scrollHeight;
-
+    if (activeConversationId === conversationId) {
+        chatBox.scrollTop = chatBox.scrollHeight;
+    }
 }
 
 function appendMessage(text, role) {
@@ -769,5 +1004,13 @@ function appendMessage(text, role) {
 
 }
 
-document.addEventListener('DOMContentLoaded', initializePasswordCharacterReveal);
+document.addEventListener('DOMContentLoaded', () => {
+    initializePasswordCharacterReveal();
+
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && conversationSidebarOpen) {
+            setConversationSidebarOpen(false);
+        }
+    });
+});
 initializeSpeechRecognition();
