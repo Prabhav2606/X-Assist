@@ -252,23 +252,11 @@ button {
 
 .conversation-sidebar-title {
   min-width: 0;
+  margin-left: 7px;
   gap: 9px;
   color: #ffffff;
-  font-size: 14px;
-  font-weight: 750;
-  letter-spacing: -0.01em;
-}
-
-.conversation-sidebar-mark {
-  display: inline-grid;
-  width: 25px;
-  height: 25px;
-  place-items: center;
-  color: #ffffff;
-  background: var(--green);
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 800;
+  font-size: 17px;
+  font-weight: 400;
 }
 
 .sidebar-icon-btn {
@@ -315,7 +303,7 @@ button {
   border-radius: 13px;
   cursor: pointer;
   font-size: 13px;
-  font-weight: 750;
+  font-weight: 600;
   transition: background-color 0.2s, border-color 0.2s, box-shadow 0.2s, transform 0.2s;
 }
 
@@ -360,32 +348,73 @@ button {
   scrollbar-width: thin;
 }
 
-.conversation-item {
-  width: 100%;
+.conversation-list-item {
+  display: flex;
   min-width: 0;
+  overflow: hidden;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  transition: background-color 0.18s, border-color 0.18s;
+}
+
+.conversation-list-item:hover {
+  background: rgba(148, 175, 188, 0.11);
+}
+
+.conversation-list-item.is-active {
+  background: rgba(0, 168, 132, 0.17);
+  border-color: rgba(0, 168, 132, 0.35);
+}
+
+.conversation-item {
+  width: auto;
+  min-width: 0;
+  flex: 1;
   display: block;
   padding: 10px 11px;
   overflow: hidden;
   color: #c8d4d9;
   text-align: left;
   background: transparent;
-  border: 1px solid transparent;
-  border-radius: 11px;
+  border: 0;
+  border-radius: 10px 0 0 10px;
   cursor: pointer;
   font-size: 13px;
   line-height: 1.35;
   transition: background-color 0.18s, border-color 0.18s, color 0.18s;
 }
 
-.conversation-item:hover {
+.conversation-item:hover,
+.conversation-list-item.is-active .conversation-item {
   color: #ffffff;
-  background: rgba(148, 175, 188, 0.11);
 }
 
-.conversation-item.is-active {
-  color: #edfffa;
-  background: rgba(0, 168, 132, 0.17);
-  border-color: rgba(0, 168, 132, 0.35);
+.conversation-delete-btn {
+  width: 35px;
+  min-width: 35px;
+  padding: 0;
+  color: #8397a1;
+  background: transparent;
+  border: 0;
+  border-radius: 0 10px 10px 0;
+  cursor: pointer;
+  transition: color 0.18s, background-color 0.18s, border-color 0.18s, transform 0.18s;
+}
+
+.conversation-delete-btn svg {
+  width: 16px;
+  height: 16px;
+  position: relative;
+  top: 2px;
+}
+
+.conversation-delete-btn:hover {
+  color: #ffb1b7;
+}
+
+.conversation-delete-btn:active {
+  transform: scale(0.94);
 }
 
 .conversation-item-title {
@@ -434,8 +463,7 @@ button {
   overflow: hidden;
   color: #ffffff;
   font-size: 15px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -533,6 +561,8 @@ button {
   border-radius: 18px;
   font-size: 14px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   box-shadow: 0 3px 10px rgba(0, 0, 0, 0.12);
   animation: message-enter 0.2s ease-out;
 }
@@ -682,7 +712,8 @@ button.send-btn:focus-visible,
 .auth-btn:focus-visible,
 .sidebar-icon-btn:focus-visible,
 .new-chat-btn:focus-visible,
-.conversation-item:focus-visible {
+.conversation-item:focus-visible,
+.conversation-delete-btn:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 3px;
 }
@@ -702,6 +733,11 @@ button.send-btn:focus-visible,
   backdrop-filter: none;
 }
 
+#deleteConversationModal {
+  backdrop-filter: none;
+  background: transparent;
+}
+
 #signOutModal {
   backdrop-filter: none;
 }
@@ -711,7 +747,8 @@ button.send-btn:focus-visible,
   backdrop-filter: none;
 }
 
-.delete-modal {
+.delete-modal,
+.delete-conversation-modal {
   width: min(100%, 360px);
   padding: 28px;
   text-align: center;
@@ -751,16 +788,19 @@ button.send-btn:focus-visible,
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.42);
 }
 
-.delete-modal h3 {
+.delete-modal h3,
+.delete-conversation-modal h3 {
   margin-bottom: 12px;
   color: #ff9ca3;
 }
 
-.delete-modal p {
+.delete-modal p,
+.delete-conversation-modal p {
   margin-bottom: 22px;
   color: #bfccd2;
   font-size: 14px;
   line-height: 1.55;
+  overflow-wrap: anywhere;
 }
 
 .delete-modal p strong {
@@ -873,10 +913,28 @@ button.send-btn:focus-visible,
   gap: 10px;
 }
 
-.delete-modal-actions .btn-small {
+.delete-modal-actions .btn-small,
+.delete-conversation-modal-actions .btn-small {
   flex: 1;
   padding: 12px;
   font-size: 12px;
+}
+
+.delete-conversation-modal-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.delete-conversation-error {
+  display: none;
+  margin: -10px 0 16px;
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.delete-conversation-error:not(:empty) {
+  display: block;
 }
 
 .clear-chat-modal-actions {
@@ -1021,11 +1079,13 @@ button.send-btn:focus-visible,
 
   .chat-app {
     height: 100svh;
+    height: 100dvh;
     min-height: 0;
   }
 
   .chat-container {
     height: 100svh;
+    height: 100dvh;
     min-height: 0;
     border: none;
     border-radius: 0;
