@@ -22,12 +22,15 @@ LEGACY_MESSAGES_TABLE = "NovaChatMessages"
 CONVERSATIONS_TABLE = "NovaChatConversations"
 CONVERSATION_MESSAGES_TABLE = "NovaChatConversationMessages"
 DEFAULT_CONVERSATION_TITLE = "New chat"
+MODEL_CONTEXT_MESSAGE_LIMIT = 5
 
 bedrock_client = boto3.client("bedrock-runtime", region_name=REGION)
 dynamodb_client = boto3.client("dynamodb", region_name=REGION)
+dynamodb_resource = boto3.resource("dynamodb", region_name=REGION)
 
 def get_dynamo_resource():
-    return boto3.resource("dynamodb", region_name=REGION)
+    # Reuse one SDK resource so DynamoDB connections can stay pooled between requests.
+    return dynamodb_resource
 
 # --- DATABASE FUNCTIONS ---
 
@@ -139,6 +142,24 @@ def to_public_conversation(conversation):
         "updated_at": float(conversation.get("updated_at", 0))
     }
 
+def to_history_message(message):
+    return {
+        "role": message["role"],
+        "content": [{"text": message["text_content"]}]
+    }
+
+def to_history_messages(messages):
+    return [to_history_message(message) for message in messages]
+
+def make_conversation_message(user_id, conversation_id, role, text, timestamp=None):
+    return {
+        "conversation_id": conversation_id,
+        "timestamp": timestamp or current_timestamp(),
+        "user_id": user_id,
+        "role": role,
+        "text_content": text
+    }
+
 def get_conversation(user_id, conversation_id):
     table = get_dynamo_resource().Table(CONVERSATIONS_TABLE)
     return table.get_item(
@@ -158,6 +179,16 @@ def get_conversation_messages(conversation_id):
     table = get_dynamo_resource().Table(CONVERSATION_MESSAGES_TABLE)
     return get_all_query_items(table, Key("conversation_id").eq(conversation_id))
 
+def get_recent_conversation_messages(conversation_id, limit):
+    table = get_dynamo_resource().Table(CONVERSATION_MESSAGES_TABLE)
+    response = table.query(
+        KeyConditionExpression=Key("conversation_id").eq(conversation_id),
+        ScanIndexForward=False,
+        Limit=limit
+    )
+    # DynamoDB returns newest first here; Nova needs chronological messages.
+    return list(reversed(response.get("Items", [])))
+
 def update_conversation_activity(user_id, conversation_id, updated_at, title=None):
     table = get_dynamo_resource().Table(CONVERSATIONS_TABLE)
     update_expression = "SET updated_at = :updated_at"
@@ -173,25 +204,28 @@ def update_conversation_activity(user_id, conversation_id, updated_at, title=Non
         ExpressionAttributeValues=expression_values
     )
 
-def save_conversation_message(user_id, conversation_id, role, text):
+def save_conversation_message(user_id, conversation, role, text):
     timestamp = current_timestamp()
-    messages_table = get_dynamo_resource().Table(CONVERSATION_MESSAGES_TABLE)
-    messages_table.put_item(
-        Item={
-            "conversation_id": conversation_id,
-            "timestamp": timestamp,
-            "user_id": user_id,
-            "role": role,
-            "text_content": text
-        }
+    conversation_id = conversation["conversation_id"]
+    message = make_conversation_message(
+        user_id,
+        conversation_id,
+        role,
+        text,
+        timestamp
     )
+    messages_table = get_dynamo_resource().Table(CONVERSATION_MESSAGES_TABLE)
+    messages_table.put_item(Item=message)
 
-    conversation = get_conversation(user_id, conversation_id)
     title = None
-    if role == "user" and conversation and conversation.get("title") == DEFAULT_CONVERSATION_TITLE:
+    if role == "user" and conversation.get("title") == DEFAULT_CONVERSATION_TITLE:
         title = make_conversation_title(text)
     update_conversation_activity(user_id, conversation_id, timestamp, title)
-    return timestamp
+
+    updated_conversation = {**conversation, "updated_at": timestamp}
+    if title is not None:
+        updated_conversation["title"] = title
+    return updated_conversation, message
 
 def create_conversation(user_id):
     conversation_id = uuid.uuid4().hex
@@ -203,10 +237,17 @@ def create_conversation(user_id):
         "created_at": created_at,
         "updated_at": created_at
     }
-    table = get_dynamo_resource().Table(CONVERSATIONS_TABLE)
-    table.put_item(Item=conversation)
-    save_conversation_message(user_id, conversation_id, "assistant", get_greeting(user_id))
-    return get_conversation(user_id, conversation_id)
+    greeting = make_conversation_message(
+        user_id,
+        conversation_id,
+        "assistant",
+        get_greeting(user_id),
+        created_at
+    )
+
+    get_dynamo_resource().Table(CONVERSATIONS_TABLE).put_item(Item=conversation)
+    get_dynamo_resource().Table(CONVERSATION_MESSAGES_TABLE).put_item(Item=greeting)
+    return conversation, [to_history_message(greeting)]
 
 def ensure_user_conversations(user_id):
     conversations = get_user_conversations(user_id)
@@ -241,21 +282,24 @@ def ensure_user_conversations(user_id):
         get_dynamo_resource().Table(CONVERSATIONS_TABLE).put_item(Item=conversation)
         return [conversation]
 
-    return [create_conversation(user_id)]
+    conversation, _ = create_conversation(user_id)
+    return [conversation]
 
-def load_history(user_id, conversation_id):
+def load_history(user_id, conversation):
+    conversation_id = conversation["conversation_id"]
     items = get_conversation_messages(conversation_id)
     if not items:
-        save_conversation_message(user_id, conversation_id, "assistant", get_greeting(user_id))
-        items = get_conversation_messages(conversation_id)
+        greeting = make_conversation_message(
+            user_id,
+            conversation_id,
+            "assistant",
+            get_greeting(user_id)
+        )
+        get_dynamo_resource().Table(CONVERSATION_MESSAGES_TABLE).put_item(Item=greeting)
+        update_conversation_activity(user_id, conversation_id, greeting["timestamp"])
+        items = [greeting]
 
-    return [
-        {
-            "role": item["role"],
-            "content": [{"text": item["text_content"]}]
-        }
-        for item in items
-    ]
+    return to_history_messages(items)
 
 def delete_conversation_messages(conversation_id):
     table = get_dynamo_resource().Table(CONVERSATION_MESSAGES_TABLE)
@@ -269,16 +313,32 @@ def delete_conversation_messages(conversation_id):
                 }
             )
 
-def clear_conversation(user_id, conversation_id):
+def clear_conversation(user_id, conversation):
+    conversation_id = conversation["conversation_id"]
+    timestamp = current_timestamp()
+    greeting = make_conversation_message(
+        user_id,
+        conversation_id,
+        "assistant",
+        get_greeting(user_id),
+        timestamp
+    )
+
     delete_conversation_messages(conversation_id)
     update_conversation_activity(
         user_id,
         conversation_id,
-        current_timestamp(),
+        timestamp,
         DEFAULT_CONVERSATION_TITLE
     )
-    save_conversation_message(user_id, conversation_id, "assistant", get_greeting(user_id))
-    return get_conversation(user_id, conversation_id)
+    get_dynamo_resource().Table(CONVERSATION_MESSAGES_TABLE).put_item(Item=greeting)
+
+    cleared_conversation = {
+        **conversation,
+        "title": DEFAULT_CONVERSATION_TITLE,
+        "updated_at": timestamp
+    }
+    return cleared_conversation, [to_history_message(greeting)]
 
 def delete_legacy_messages(user_id):
     table = get_dynamo_resource().Table(LEGACY_MESSAGES_TABLE)
@@ -288,6 +348,18 @@ def delete_legacy_messages(user_id):
             batch.delete_item(
                 Key={"user_id": user_id, "timestamp": message["timestamp"]}
             )
+
+def delete_conversation(user_id, conversation):
+    conversation_id = conversation["conversation_id"]
+    delete_conversation_messages(conversation_id)
+    get_dynamo_resource().Table(CONVERSATIONS_TABLE).delete_item(
+        Key={"user_id": user_id, "conversation_id": conversation_id}
+    )
+
+    # Prevent a deleted migrated legacy chat from being imported again on next sign-in.
+    legacy_conversation_id = f"legacy-{uuid.uuid5(uuid.NAMESPACE_URL, user_id).hex}"
+    if conversation_id == legacy_conversation_id:
+        delete_legacy_messages(user_id)
 
 def delete_user_conversations(user_id):
     conversations = get_user_conversations(user_id)
@@ -422,14 +494,20 @@ def home():
 @app.route("/api/conversations", methods=["GET"])
 def list_conversations():
     user_id = request.args.get("user_id")
+    include_active_history = request.args.get("include_active_history") == "true"
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
 
     try:
         conversations = ensure_user_conversations(user_id)
-        return jsonify({
+        response = {
             "conversations": [to_public_conversation(conversation) for conversation in conversations]
-        })
+        }
+        if include_active_history and conversations:
+            active_conversation = conversations[0]
+            response["active_conversation"] = to_public_conversation(active_conversation)
+            response["history"] = load_history(user_id, active_conversation)
+        return jsonify(response)
     except Exception as error:
         print(f"DynamoDB conversation list error: {error}")
         return jsonify({"error": "Failed to load conversations."}), 500
@@ -442,13 +520,32 @@ def create_new_conversation():
         return jsonify({"error": "Unauthorized"}), 401
 
     try:
-        # Make sure old single-history chats are migrated before a new chat is added.
-        ensure_user_conversations(user_id)
-        conversation = create_conversation(user_id)
-        return jsonify({"conversation": to_public_conversation(conversation)}), 201
+        # The sign-in list request already handles a legacy-history migration.
+        conversation, history = create_conversation(user_id)
+        return jsonify({
+            "conversation": to_public_conversation(conversation),
+            "history": history
+        }), 201
     except Exception as error:
         print(f"DynamoDB new conversation error: {error}")
         return jsonify({"error": "Failed to create a new chat."}), 500
+
+@app.route("/api/conversations/<conversation_id>", methods=["DELETE"])
+def delete_saved_conversation(conversation_id):
+    data = request.get_json(silent=True) or {}
+    user_id = data.get("user_id")
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        conversation = get_conversation(user_id, conversation_id)
+        if not conversation:
+            return jsonify({"error": "Conversation not found."}), 404
+        delete_conversation(user_id, conversation)
+        return jsonify({"status": "deleted", "conversation_id": conversation_id})
+    except Exception as error:
+        print(f"DynamoDB delete conversation error: {error}")
+        return jsonify({"error": "Failed to delete this conversation."}), 500
 
 @app.route("/api/history", methods=["GET"])
 def get_history():
@@ -460,10 +557,10 @@ def get_history():
         return jsonify({"error": "A conversation is required."}), 400
 
     try:
-        ensure_user_conversations(user_id)
-        if not get_conversation(user_id, conversation_id):
+        conversation = get_conversation(user_id, conversation_id)
+        if not conversation:
             return jsonify({"error": "Conversation not found."}), 404
-        return jsonify({"history": load_history(user_id, conversation_id)})
+        return jsonify({"history": load_history(user_id, conversation)})
     except Exception as error:
         print(f"DynamoDB history error: {error}")
         return jsonify({"error": "Failed to load this conversation."}), 500
@@ -479,12 +576,14 @@ def clear_history():
         return jsonify({"error": "A conversation is required."}), 400
 
     try:
-        if not get_conversation(user_id, conversation_id):
+        conversation = get_conversation(user_id, conversation_id)
+        if not conversation:
             return jsonify({"error": "Conversation not found."}), 404
-        conversation = clear_conversation(user_id, conversation_id)
+        cleared_conversation, history = clear_conversation(user_id, conversation)
         return jsonify({
             "status": "cleared",
-            "conversation": to_public_conversation(conversation)
+            "conversation": to_public_conversation(cleared_conversation),
+            "history": history
         })
     except Exception as error:
         print(f"DynamoDB clear conversation error: {error}")
@@ -504,14 +603,22 @@ def chat():
     if not new_message_text:
         return jsonify({"error": "No message provided"}), 400
 
-    if not get_conversation(user_id, conversation_id):
+    conversation = get_conversation(user_id, conversation_id)
+    if not conversation:
         return jsonify({"error": "Conversation not found."}), 404
 
-    save_conversation_message(user_id, conversation_id, "user", new_message_text)
-    history = load_history(user_id, conversation_id)
-
-    api_messages = history.copy()
-    if len(api_messages) > 0 and api_messages[0]["role"] == "assistant":
+    conversation, _ = save_conversation_message(
+        user_id,
+        conversation,
+        "user",
+        new_message_text
+    )
+    recent_messages = get_recent_conversation_messages(
+        conversation_id,
+        MODEL_CONTEXT_MESSAGE_LIMIT
+    )
+    api_messages = to_history_messages(recent_messages)
+    if api_messages and api_messages[0]["role"] == "assistant":
         api_messages.pop(0)
 
     payload = {
@@ -525,8 +632,12 @@ def chat():
         )
         response_body = json.loads(response['body'].read())
         assistant_reply = response_body['output']['message']['content'][0]['text']
-        save_conversation_message(user_id, conversation_id, "assistant", assistant_reply)
-        conversation = get_conversation(user_id, conversation_id)
+        conversation, _ = save_conversation_message(
+            user_id,
+            conversation,
+            "assistant",
+            assistant_reply
+        )
         return jsonify({
             "reply": assistant_reply,
             "conversation": to_public_conversation(conversation)
