@@ -331,7 +331,7 @@ button {
 .conversation-sidebar-status {
   display: none;
   margin: -6px 4px -4px;
-  color: #ff9ca3;
+  color: var(--danger);
   font-size: 12px;
   line-height: 1.4;
 }
@@ -929,7 +929,7 @@ button.send-btn:focus-visible,
   gap: 10px;
 }
 
-.delete-conversation-error {
+.delete-conversation-modal .delete-conversation-error {
   display: none;
   margin: -10px 0 16px;
   color: var(--danger);
