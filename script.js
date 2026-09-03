@@ -1298,8 +1298,26 @@ function appendMessage(text, role) {
 
 }
 
+function syncMobileViewportHeight() {
+    const viewportHeight = window.visualViewport?.height || window.innerHeight;
+    if (!viewportHeight) return;
+
+    document.documentElement.style.setProperty(
+        '--mobile-viewport-height',
+        `${Math.round(viewportHeight)}px`
+    );
+}
+
+function initializeMobileViewportHeight() {
+    syncMobileViewportHeight();
+    window.addEventListener('resize', syncMobileViewportHeight);
+    window.visualViewport?.addEventListener('resize', syncMobileViewportHeight);
+    window.visualViewport?.addEventListener('scroll', syncMobileViewportHeight);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     initializePasswordCharacterReveal();
+    initializeMobileViewportHeight();
 
     document.addEventListener('keydown', (event) => {
         if (event.key === 'Escape' && conversationSidebarOpen) {
