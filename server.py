@@ -510,7 +510,7 @@ def list_conversations():
         return jsonify(response)
     except Exception as error:
         print(f"DynamoDB conversation list error: {error}")
-        return jsonify({"error": "Failed to load conversations."}), 500
+        return jsonify({"error": "Failed to load conversations!"}), 500
 
 @app.route("/api/conversations", methods=["POST"])
 def create_new_conversation():
@@ -528,7 +528,7 @@ def create_new_conversation():
         }), 201
     except Exception as error:
         print(f"DynamoDB new conversation error: {error}")
-        return jsonify({"error": "Failed to create a new chat."}), 500
+        return jsonify({"error": "Failed to create a new chat!"}), 500
 
 @app.route("/api/conversations/<conversation_id>", methods=["DELETE"])
 def delete_saved_conversation(conversation_id):
@@ -540,12 +540,12 @@ def delete_saved_conversation(conversation_id):
     try:
         conversation = get_conversation(user_id, conversation_id)
         if not conversation:
-            return jsonify({"error": "Conversation not found."}), 404
+            return jsonify({"error": "Conversation not found!"}), 404
         delete_conversation(user_id, conversation)
         return jsonify({"status": "deleted", "conversation_id": conversation_id})
     except Exception as error:
         print(f"DynamoDB delete conversation error: {error}")
-        return jsonify({"error": "Failed to delete this conversation."}), 500
+        return jsonify({"error": "Failed to delete this conversation!"}), 500
 
 @app.route("/api/history", methods=["GET"])
 def get_history():
@@ -554,16 +554,16 @@ def get_history():
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
     if not conversation_id:
-        return jsonify({"error": "A conversation is required."}), 400
+        return jsonify({"error": "A conversation is required"}), 400
 
     try:
         conversation = get_conversation(user_id, conversation_id)
         if not conversation:
-            return jsonify({"error": "Conversation not found."}), 404
+            return jsonify({"error": "Conversation not found!"}), 404
         return jsonify({"history": load_history(user_id, conversation)})
     except Exception as error:
         print(f"DynamoDB history error: {error}")
-        return jsonify({"error": "Failed to load this conversation."}), 500
+        return jsonify({"error": "Failed to load this conversation!"}), 500
 
 @app.route("/api/clear", methods=["POST"])
 def clear_history():
@@ -573,12 +573,12 @@ def clear_history():
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
     if not conversation_id:
-        return jsonify({"error": "A conversation is required."}), 400
+        return jsonify({"error": "A conversation is required"}), 400
 
     try:
         conversation = get_conversation(user_id, conversation_id)
         if not conversation:
-            return jsonify({"error": "Conversation not found."}), 404
+            return jsonify({"error": "Conversation not found!"}), 404
         cleared_conversation, history = clear_conversation(user_id, conversation)
         return jsonify({
             "status": "cleared",
@@ -587,7 +587,7 @@ def clear_history():
         })
     except Exception as error:
         print(f"DynamoDB clear conversation error: {error}")
-        return jsonify({"error": "Failed to clear this conversation."}), 500
+        return jsonify({"error": "Failed to clear this conversation!"}), 500
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
@@ -599,13 +599,13 @@ def chat():
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
     if not conversation_id:
-        return jsonify({"error": "A conversation is required."}), 400
+        return jsonify({"error": "A conversation is required"}), 400
     if not new_message_text:
         return jsonify({"error": "No message provided"}), 400
 
     conversation = get_conversation(user_id, conversation_id)
     if not conversation:
-        return jsonify({"error": "Conversation not found."}), 404
+        return jsonify({"error": "Conversation not found!"}), 404
 
     conversation, _ = save_conversation_message(
         user_id,
