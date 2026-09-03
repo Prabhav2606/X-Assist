@@ -15,7 +15,6 @@
   --danger-dark: #6d2932;
   --warning: #ffd479;
   --focus: #76e8cf;
-  --mobile-viewport-height: 100svh;
 }
 
 html {
@@ -31,7 +30,7 @@ html {
 
 body {
   min-height: 100vh;
-  min-height: 100svh;
+  min-height: 100dvh;
   padding: 20px;
   color: var(--text);
   display: flex;
@@ -1083,7 +1082,8 @@ button.send-btn:focus-visible,
   }
 
   .chat-app {
-    height: var(--mobile-viewport-height);
+    height: 100vh;
+    height: 100dvh;
     min-height: 0;
   }
 
