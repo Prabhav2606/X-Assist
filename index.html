@@ -82,11 +82,10 @@
         <!-- Chat Screen -->
         <div class="chat-app" id="chatApp">
             <aside class="conversation-sidebar" id="conversationSidebar" aria-label="Conversations" aria-hidden="true">
-                <div class="conversation-sidebar-header">
-                    <div class="conversation-sidebar-title">
-                        <span class="conversation-sidebar-mark" aria-hidden="true">X</span>
-                        <span>Conversations</span>
-                    </div>
+                    <div class="conversation-sidebar-header">
+                        <div class="conversation-sidebar-title">
+                            <span>Conversations</span>
+                        </div>
                     <button type="button" class="sidebar-icon-btn" onclick="setConversationSidebarOpen(false)" aria-label="Close conversations" title="Close conversations">
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
                             <path d="m6 6 12 12M18 6 6 18"></path>
@@ -126,7 +125,7 @@
                 <div class="chat-box" id="chatBox"></div>
                 <p class="speech-status" id="speechStatus" role="status" aria-live="polite"></p>
                 <div class="input-area">
-                    <input type="text" id="userInput" class="msg-input" placeholder="Ask anything..." autocomplete="new-password" onkeydown="if(event.key==='Enter') sendMessage()">
+                    <input type="text" id="userInput" name="chat-message" class="msg-input" placeholder="Ask anything..." autocomplete="off" autocapitalize="sentences" spellcheck="true" inputmode="text" onkeydown="if(event.key==='Enter') sendMessage()">
                     <button type="button" class="speech-btn" id="speechBtn" onclick="toggleSpeechRecognition()" aria-label="Start voice input" aria-pressed="false" title="Start voice input">
                         <svg class="speech-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                             <rect x="9" y="2" width="6" height="12" rx="3"></rect>
@@ -180,6 +179,19 @@
                 <div class="clear-chat-modal-actions">
                     <button class="btn-small modal-cancel-btn" onclick="closeClearChatModal()">Cancel</button>
                     <button class="btn-small clear-chat-confirm-btn" onclick="confirmClearChat()">Clear Chat</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Delete Conversation Confirmation Modal -->
+        <div id="deleteConversationModal" class="modal-overlay" style="display: none;" onclick="closeModalOnBackdrop(event)" role="dialog" aria-modal="true" aria-labelledby="deleteConversationTitle">
+            <div class="delete-conversation-modal">
+                <h3 id="deleteConversationTitle">Delete Conversation</h3>
+                <p id="deleteConversationDescription"></p>
+                <p id="deleteConversationError" class="delete-conversation-error" role="alert" aria-live="polite"></p>
+                <div class="delete-conversation-modal-actions">
+                    <button type="button" id="deleteConversationCancelBtn" class="btn-small modal-cancel-btn" onclick="closeDeleteConversationModal()">Cancel</button>
+                    <button type="button" id="deleteConversationConfirmBtn" class="btn-small deleteAccount-btn" onclick="confirmDeleteConversation()">Delete</button>
                 </div>
             </div>
         </div>
