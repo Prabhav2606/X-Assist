@@ -486,11 +486,10 @@ function setSpeechStatus(message, isError = false) {
     }
 }
 
-function focusMessageInputAtEnd(input = document.getElementById('userInput')) {
+function scrollMessageInputToEnd(input = document.getElementById('userInput')) {
     if (!input) return;
 
     const caretPosition = input.value.length;
-    input.focus({ preventScroll: true });
     input.setSelectionRange(caretPosition, caretPosition);
     input.scrollLeft = input.scrollWidth;
 
@@ -498,6 +497,13 @@ function focusMessageInputAtEnd(input = document.getElementById('userInput')) {
     window.requestAnimationFrame(() => {
         input.scrollLeft = input.scrollWidth;
     });
+}
+
+function focusMessageInputAtEnd(input = document.getElementById('userInput')) {
+    if (!input) return;
+
+    input.focus({ preventScroll: true });
+    scrollMessageInputToEnd(input);
 }
 
 function updateSpeechButton() {
@@ -670,8 +676,11 @@ function stopSpeechRecognition(discardPendingResults = false) {
 }
 
 async function toggleSpeechRecognition() {
+    const input = document.getElementById('userInput');
+
     if (isListening) {
         setSpeechStatus('Finishing voice input...');
+        scrollMessageInputToEnd(input);
         stopSpeechRecognition();
         return;
     }
@@ -682,11 +691,11 @@ async function toggleSpeechRecognition() {
         return;
     }
 
-    const input = document.getElementById('userInput');
     speechBaseText = input.value.trim();
     finalSpeechTranscript = '';
     shouldIgnoreSpeechResults = false;
     speechErrorMessage = '';
+    scrollMessageInputToEnd(input);
     isRequestingMicrophoneAccess = true;
     updateSpeechButton();
     setSpeechStatus('Requesting microphone access...');
