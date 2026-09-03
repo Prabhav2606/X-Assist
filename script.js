@@ -486,6 +486,20 @@ function setSpeechStatus(message, isError = false) {
     }
 }
 
+function focusMessageInputAtEnd(input = document.getElementById('userInput')) {
+    if (!input) return;
+
+    const caretPosition = input.value.length;
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(caretPosition, caretPosition);
+    input.scrollLeft = input.scrollWidth;
+
+    // Some mobile browsers apply their own input scroll after focus completes.
+    window.requestAnimationFrame(() => {
+        input.scrollLeft = input.scrollWidth;
+    });
+}
+
 function updateSpeechButton() {
     const button = document.getElementById('speechBtn');
     if (!button) return;
@@ -596,7 +610,7 @@ function initializeSpeechRecognition(showUnavailableMessage = false) {
             .map((part) => part.trim())
             .filter(Boolean)
             .join(' ');
-        input.focus();
+        focusMessageInputAtEnd(input);
     };
 
     speechRecognition.onerror = (event) => {
@@ -635,7 +649,7 @@ function initializeSpeechRecognition(showUnavailableMessage = false) {
             setSpeechStatus(message);
         }
 
-        document.getElementById('userInput').focus();
+        focusMessageInputAtEnd();
     };
 
     return true;
