@@ -8,12 +8,18 @@ let finalSpeechTranscript = '';
 let shouldIgnoreSpeechResults = false;
 let speechErrorMessage = '';
 let speechStatusTimer = null;
+let isRequestingMicrophoneAccess = false;
 let activeConversationId = null;
 let conversations = [];
+const conversationHistoryCache = new Map();
 let conversationSidebarOpen = false;
 let isCreatingConversation = false;
+let isLoadingConversations = false;
+let conversationPendingDeletionId = null;
+let isDeletingConversation = false;
 let isSendingMessage = false;
 const PASSWORD_REVEAL_DURATION = 400;
+const DELETE_CONVERSATION_TITLE_LIMIT = 36;
 const passwordInputStates = new WeakMap();
 
 function getFirstName(name) {
@@ -32,6 +38,39 @@ function setConversationStatus(message = '') {
 
 function getActiveConversation() {
     return conversations.find((conversation) => conversation.id === activeConversationId) || null;
+}
+
+function normalizeHistoryMessage(message) {
+    return {
+        role: message?.role === 'user' ? 'user' : 'assistant',
+        content: [{ text: String(message?.content?.[0]?.text || '') }]
+    };
+}
+
+function cacheConversationHistory(conversationId, history) {
+    if (!conversationId) return [];
+
+    const normalizedHistory = Array.isArray(history)
+        ? history.map(normalizeHistoryMessage)
+        : [];
+    conversationHistoryCache.set(conversationId, normalizedHistory);
+    return normalizedHistory;
+}
+
+function appendCachedMessage(conversationId, text, role) {
+    const history = conversationHistoryCache.get(conversationId) || [];
+    history.push(normalizeHistoryMessage({ role, content: [{ text }] }));
+    conversationHistoryCache.set(conversationId, history);
+    return history;
+}
+
+function renderConversationHistory(history) {
+    const chatBox = document.getElementById('chatBox');
+    chatBox.replaceChildren();
+
+    history.forEach((message) => {
+        appendMessage(message.content[0].text, message.role);
+    });
 }
 
 function updateActiveConversationTitle() {
@@ -56,12 +95,15 @@ function renderConversationList() {
     }
 
     conversations.forEach((conversation) => {
+        const item = document.createElement('div');
         const button = document.createElement('button');
         const title = document.createElement('span');
+        const deleteButton = document.createElement('button');
         const isActive = conversation.id === activeConversationId;
 
+        item.className = `conversation-list-item${isActive ? ' is-active' : ''}`;
         button.type = 'button';
-        button.className = `conversation-item${isActive ? ' is-active' : ''}`;
+        button.className = 'conversation-item';
         button.title = conversation.title;
         button.setAttribute('aria-current', isActive ? 'page' : 'false');
         button.addEventListener('click', () => selectConversation(conversation.id));
@@ -69,7 +111,24 @@ function renderConversationList() {
         title.className = 'conversation-item-title';
         title.textContent = conversation.title;
         button.appendChild(title);
-        list.appendChild(button);
+
+        deleteButton.type = 'button';
+        deleteButton.className = 'conversation-delete-btn';
+        deleteButton.setAttribute('aria-label', `Delete conversation: ${conversation.title}`);
+        deleteButton.title = `Delete ${conversation.title}`;
+        deleteButton.innerHTML = `
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 6h18"></path>
+                <path d="M8 6V4h8v2"></path>
+                <path d="m19 6-1 14H6L5 6"></path>
+                <path d="M10 11v6M14 11v6"></path>
+            </svg>
+        `;
+        deleteButton.addEventListener('click', () => openDeleteConversationModal(conversation.id));
+
+        item.appendChild(button);
+        item.appendChild(deleteButton);
+        list.appendChild(item);
     });
 
     updateActiveConversationTitle();
@@ -114,10 +173,13 @@ function toggleConversationSidebar() {
     setConversationSidebarOpen(!conversationSidebarOpen);
 }
 
-async function loadConversations() {
-    if (!activeUserId) return [];
+async function loadConversations(includeActiveHistory = false) {
+    if (!activeUserId) return null;
 
-    const response = await fetch(`/api/conversations?user_id=${encodeURIComponent(activeUserId)}`);
+    const query = new URLSearchParams({ user_id: activeUserId });
+    if (includeActiveHistory) query.set('include_active_history', 'true');
+
+    const response = await fetch(`/api/conversations?${query.toString()}`);
     const data = await response.json();
     if (!response.ok || data.error) {
         throw new Error(data.error || 'Failed to load conversations.');
@@ -125,32 +187,49 @@ async function loadConversations() {
 
     conversations = Array.isArray(data.conversations) ? data.conversations : [];
     sortConversations();
-    renderConversationList();
     setConversationStatus('');
-    return conversations;
+    return data;
 }
 
 async function initializeConversations() {
     const signedInUserId = activeUserId;
+    const newChatButton = document.getElementById('newChatBtn');
+    isLoadingConversations = true;
+    if (newChatButton) newChatButton.disabled = true;
 
     try {
-        const loadedConversations = await loadConversations();
+        const data = await loadConversations(true);
         if (activeUserId !== signedInUserId) return;
 
-        if (!loadedConversations.length) {
+        if (!conversations.length) {
+            isLoadingConversations = false;
+            if (newChatButton) newChatButton.disabled = false;
             await createNewChat();
             return;
         }
 
-        await selectConversation(loadedConversations[0].id, false);
+        const activeConversation = data.active_conversation || conversations[0];
+        activeConversationId = activeConversation.id;
+        renderConversationList();
+
+        if (data.active_conversation?.id === activeConversation.id && Array.isArray(data.history)) {
+            renderConversationHistory(cacheConversationHistory(activeConversation.id, data.history));
+        } else {
+            await loadUserHistory(activeConversation.id);
+        }
     } catch (error) {
         console.error('Failed to initialize conversations', error);
         setConversationStatus('Unable to load your conversations. Please try again.');
+    } finally {
+        if (activeUserId === signedInUserId) {
+            isLoadingConversations = false;
+            if (newChatButton) newChatButton.disabled = false;
+        }
     }
 }
 
 async function createNewChat() {
-    if (!activeUserId || isCreatingConversation) return;
+    if (!activeUserId || isCreatingConversation || isLoadingConversations) return;
 
     const requestedUserId = activeUserId;
     const newChatButton = document.getElementById('newChatBtn');
@@ -172,7 +251,11 @@ async function createNewChat() {
 
         activeConversationId = data.conversation.id;
         upsertConversation(data.conversation);
-        await loadUserHistory(activeConversationId);
+        if (Array.isArray(data.history)) {
+            renderConversationHistory(cacheConversationHistory(activeConversationId, data.history));
+        } else {
+            await loadUserHistory(activeConversationId, true);
+        }
 
         if (isCompactSidebar()) {
             setConversationSidebarOpen(false);
@@ -391,7 +474,7 @@ function setSpeechStatus(message, isError = false) {
     status.classList.toggle('is-error', isError);
 
     // Keep the live listening state visible, but clear completed states after four seconds.
-    if (message && !isListening) {
+    if (message && !isListening && !isRequestingMicrophoneAccess) {
         const displayedMessage = message;
         speechStatusTimer = window.setTimeout(() => {
             if (!isListening && status.textContent === displayedMessage) {
@@ -408,24 +491,79 @@ function updateSpeechButton() {
     if (!button) return;
 
     button.classList.toggle('is-listening', isListening);
+    button.classList.toggle('is-requesting', isRequestingMicrophoneAccess);
     button.setAttribute('aria-pressed', String(isListening));
-    button.setAttribute('aria-label', isListening ? 'Stop voice input' : 'Start voice input');
-    button.title = isListening ? 'Stop voice input' : 'Start voice input';
+    button.setAttribute('aria-busy', String(isRequestingMicrophoneAccess));
+
+    const label = isRequestingMicrophoneAccess
+        ? 'Requesting microphone permission'
+        : isListening
+            ? 'Stop voice input'
+            : 'Start voice input';
+    button.setAttribute('aria-label', label);
+    button.title = label;
 }
 
-function initializeSpeechRecognition() {
+function getSpeechUnavailableMessage() {
+    if (!window.isSecureContext) {
+        return 'Voice input requires an HTTPS connection. Open the secure version of this site and try again.';
+    }
+
+    return 'Voice input is not supported in this browser. Try Chrome or use your keyboard\'s dictation.';
+}
+
+function getMicrophoneAccessErrorMessage(error) {
+    const errorMessages = {
+        NotAllowedError: 'Microphone permission was denied. Allow microphone access in your browser settings and try again.',
+        NotFoundError: 'No microphone was found. Connect one and try again.',
+        NotReadableError: 'Your microphone is being used by another app. Close it and try again.',
+        SecurityError: 'Voice input requires an HTTPS connection. Open the secure version of this site and try again.',
+        AbortError: 'Microphone access was interrupted. Please try again.'
+    };
+
+    return errorMessages[error?.name] || 'Unable to access your microphone. Please try again.';
+}
+
+async function requestMicrophoneAccess() {
+    if (!window.isSecureContext) {
+        setSpeechStatus(getSpeechUnavailableMessage(), true);
+        return false;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+        setSpeechStatus('Microphone access is unavailable in this browser.', true);
+        return false;
+    }
+
+    let stream;
+    try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        return true;
+    } catch (error) {
+        setSpeechStatus(getMicrophoneAccessErrorMessage(error), true);
+        return false;
+    } finally {
+        stream?.getTracks().forEach((track) => track.stop());
+    }
+}
+
+function initializeSpeechRecognition(showUnavailableMessage = false) {
     const button = document.getElementById('speechBtn');
     const SpeechRecognition = getSpeechRecognitionConstructor();
 
     if (!button || !SpeechRecognition) {
         if (button) {
-            button.disabled = true;
+            button.disabled = false;
             button.setAttribute('aria-label', 'Voice input is unavailable in this browser');
             button.title = 'Voice input requires a supported browser';
         }
-        setSpeechStatus('Voice input is unavailable in this browser.', true);
-        return;
+        if (showUnavailableMessage) {
+            setSpeechStatus(getSpeechUnavailableMessage(), true);
+        }
+        return false;
     }
+
+    if (speechRecognition) return true;
 
     speechRecognition = new SpeechRecognition();
     speechRecognition.continuous = false;
@@ -469,7 +607,9 @@ function initializeSpeechRecognition() {
             'service-not-allowed': 'Speech recognition is unavailable. Check your browser microphone settings.',
             'audio-capture': 'No microphone was found. Connect one and try again.',
             'network': 'Speech recognition could not reach the service. Check your connection.',
-            'no-speech': 'I did not hear anything. Try speaking again.'
+            'no-speech': 'I did not hear anything. Try speaking again.',
+            'language-not-supported': 'Voice input is unavailable for this language in your browser.',
+            'language-unavailable': 'Voice input is temporarily unavailable. Please try again.'
         };
 
         speechErrorMessage = errorMessages[event.error] || 'Voice input stopped unexpectedly. Please try again.';
@@ -497,6 +637,8 @@ function initializeSpeechRecognition() {
 
         document.getElementById('userInput').focus();
     };
+
+    return true;
 }
 
 function stopSpeechRecognition(discardPendingResults = false) {
@@ -513,19 +655,16 @@ function stopSpeechRecognition(discardPendingResults = false) {
     }
 }
 
-function toggleSpeechRecognition() {
-    if (!speechRecognition) {
-        initializeSpeechRecognition();
-    }
-
-    if (!speechRecognition) {
-        setSpeechStatus('Voice input is unavailable in this browser.', true);
-        return;
-    }
-
+async function toggleSpeechRecognition() {
     if (isListening) {
         setSpeechStatus('Finishing voice input...');
         stopSpeechRecognition();
+        return;
+    }
+
+    if (isRequestingMicrophoneAccess) return;
+
+    if (!speechRecognition && !initializeSpeechRecognition(true)) {
         return;
     }
 
@@ -534,13 +673,26 @@ function toggleSpeechRecognition() {
     finalSpeechTranscript = '';
     shouldIgnoreSpeechResults = false;
     speechErrorMessage = '';
+    isRequestingMicrophoneAccess = true;
+    updateSpeechButton();
+    setSpeechStatus('Requesting microphone access...');
+
+    const hasMicrophoneAccess = await requestMicrophoneAccess();
+    isRequestingMicrophoneAccess = false;
+    updateSpeechButton();
+    if (!hasMicrophoneAccess) return;
 
     try {
         speechRecognition.start();
     } catch (error) {
         isListening = false;
         updateSpeechButton();
-        setSpeechStatus('Voice input is still closing. Please try again in a moment.', true);
+        setSpeechStatus(
+            error?.name === 'NotAllowedError' || error?.name === 'SecurityError'
+                ? getMicrophoneAccessErrorMessage(error)
+                : 'Voice input is still closing. Please try again in a moment.',
+            true
+        );
     }
 }
 
@@ -721,6 +873,8 @@ function closeModalOnBackdrop(event) {
         closeClearChatModal();
     } else if (modalId === 'signOutModal') {
         closeSignOutModal();
+    } else if (modalId === 'deleteConversationModal') {
+        closeDeleteConversationModal();
     }
 }
 
@@ -842,7 +996,11 @@ function performSignOut() {
     activeUserName = '';
     activeConversationId = null;
     conversations = [];
+    conversationHistoryCache.clear();
     isCreatingConversation = false;
+    isLoadingConversations = false;
+    conversationPendingDeletionId = null;
+    isDeletingConversation = false;
     isSendingMessage = false;
     setConversationSidebarOpen(false);
     renderConversationList();
@@ -872,12 +1030,22 @@ function performSignOut() {
     hideMessages();
 }
 
-async function loadUserHistory(conversationId = activeConversationId) {
+async function loadUserHistory(conversationId = activeConversationId, forceRefresh = false) {
     if (!activeUserId || !conversationId) return;
 
     const requestedUserId = activeUserId;
+    const cachedHistory = conversationHistoryCache.get(conversationId);
+    if (!forceRefresh && cachedHistory) {
+        if (activeUserId === requestedUserId && activeConversationId === conversationId) {
+            renderConversationHistory(cachedHistory);
+        }
+        return cachedHistory;
+    }
+
     const chatBox = document.getElementById('chatBox');
-    chatBox.replaceChildren();
+    if (activeConversationId === conversationId) {
+        chatBox.replaceChildren();
+    }
 
     try {
         const response = await fetch(`/api/history?user_id=${encodeURIComponent(requestedUserId)}&conversation_id=${encodeURIComponent(conversationId)}`);
@@ -885,18 +1053,119 @@ async function loadUserHistory(conversationId = activeConversationId) {
         if (!response.ok || data.error) {
             throw new Error(data.error || 'Failed to load this conversation.');
         }
-        if (activeUserId !== requestedUserId || activeConversationId !== conversationId) {
-            return;
+        const history = cacheConversationHistory(conversationId, data.history);
+        if (activeUserId === requestedUserId && activeConversationId === conversationId) {
+            renderConversationHistory(history);
         }
-
-        data.history?.forEach((message) => {
-            appendMessage(message.content[0].text, message.role);
-        });
+        return history;
     }
     catch (error) {
         console.error('Failed to load history', error);
         if (activeUserId === requestedUserId && activeConversationId === conversationId) {
             setConversationStatus('Unable to load this conversation. Please try again.');
+        }
+    }
+}
+
+function showDeleteConversationError(message = '') {
+    const errorMessage = document.getElementById('deleteConversationError');
+    if (errorMessage) errorMessage.textContent = message;
+}
+
+function getDeleteConversationTitle(title) {
+    const normalizedTitle = String(title || 'New chat').replace(/\s+/g, ' ').trim();
+    if (normalizedTitle.length <= DELETE_CONVERSATION_TITLE_LIMIT) {
+        return normalizedTitle;
+    }
+
+    return `${normalizedTitle.slice(0, DELETE_CONVERSATION_TITLE_LIMIT - 3).trimEnd()}...`;
+}
+
+function openDeleteConversationModal(conversationId) {
+    if (!conversationId || isDeletingConversation) return;
+
+    if (conversationId === activeConversationId && isSendingMessage) {
+        setConversationStatus('Wait for the current reply before deleting this conversation.');
+        return;
+    }
+
+    const conversation = conversations.find((item) => item.id === conversationId);
+    if (!conversation) return;
+
+    conversationPendingDeletionId = conversationId;
+    showDeleteConversationError();
+    document.getElementById('deleteConversationDescription').textContent =
+        `Delete "${getDeleteConversationTitle(conversation.title)}" and all of its messages?`;
+    document.getElementById('deleteConversationModal').style.display = 'flex';
+    document.getElementById('deleteConversationCancelBtn').focus();
+}
+
+function closeDeleteConversationModal() {
+    if (isDeletingConversation) return;
+
+    conversationPendingDeletionId = null;
+    showDeleteConversationError();
+    document.getElementById('deleteConversationModal').style.display = 'none';
+}
+
+async function confirmDeleteConversation() {
+    const conversationId = conversationPendingDeletionId;
+    const requestedUserId = activeUserId;
+    if (!conversationId || !requestedUserId || isDeletingConversation) return;
+
+    const confirmButton = document.getElementById('deleteConversationConfirmBtn');
+    const confirmButtonLabel = confirmButton?.textContent;
+    isDeletingConversation = true;
+    if (confirmButton) {
+        confirmButton.disabled = true;
+        confirmButton.textContent = 'Deleting...';
+    }
+    showDeleteConversationError();
+
+    try {
+        const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_id: requestedUserId })
+        });
+        const data = await response.json();
+        if (!response.ok || data.error || data.status !== 'deleted') {
+            throw new Error(data.error || 'Failed to delete this conversation.');
+        }
+        if (activeUserId !== requestedUserId) return;
+
+        const wasActiveConversation = activeConversationId === conversationId;
+        conversations = conversations.filter((conversation) => conversation.id !== conversationId);
+        conversationHistoryCache.delete(conversationId);
+        conversationPendingDeletionId = null;
+        document.getElementById('deleteConversationModal').style.display = 'none';
+
+        if (!wasActiveConversation) {
+            renderConversationList();
+            return;
+        }
+
+        stopSpeechRecognition(true);
+        activeConversationId = null;
+        document.getElementById('chatBox').replaceChildren();
+
+        const nextConversation = conversations[0];
+        if (nextConversation) {
+            activeConversationId = nextConversation.id;
+            renderConversationList();
+            await loadUserHistory(nextConversation.id);
+        } else {
+            renderConversationList();
+            await createNewChat();
+        }
+    } catch (error) {
+        console.error('Failed to delete conversation', error);
+        showDeleteConversationError(error.message || 'Unable to delete this conversation. Please try again.');
+    } finally {
+        isDeletingConversation = false;
+        if (confirmButton) {
+            confirmButton.disabled = false;
+            confirmButton.textContent = confirmButtonLabel;
         }
     }
 }
@@ -915,6 +1184,7 @@ async function confirmClearChat() {
     if (!activeConversationId) return;
 
     const conversationId = activeConversationId;
+    const requestedUserId = activeUserId;
 
     try {
         const response = await fetch('/api/clear', {
@@ -926,10 +1196,19 @@ async function confirmClearChat() {
         if (!response.ok || data.error) {
             throw new Error(data.error || 'Failed to clear this conversation.');
         }
+        if (activeUserId !== requestedUserId) return;
 
         upsertConversation(data.conversation);
-        if (activeConversationId === conversationId) {
-            await loadUserHistory(conversationId);
+        if (Array.isArray(data.history)) {
+            const history = cacheConversationHistory(conversationId, data.history);
+            if (activeConversationId === conversationId) {
+                renderConversationHistory(history);
+            }
+        } else {
+            conversationHistoryCache.delete(conversationId);
+            if (activeConversationId === conversationId) {
+                await loadUserHistory(conversationId, true);
+            }
         }
     } catch (error) {
         console.error('Failed to clear conversation', error);
@@ -951,10 +1230,12 @@ async function sendMessage() {
     }
 
     const conversationId = activeConversationId;
+    const requestedUserId = activeUserId;
     const chatBox = document.getElementById('chatBox');
     isSendingMessage = true;
 
     appendMessage(messageText, 'user');
+    appendCachedMessage(conversationId, messageText, 'user');
     inputElement.value = '';
     const loadingDiv = appendMessage('Thinking...', 'assistant');
 
@@ -969,16 +1250,29 @@ async function sendMessage() {
             })
         });
         const data = await response.json();
+        if (!response.ok || data.error || !data.reply) {
+            throw new Error(data.error || 'Failed to get response.');
+        }
+        if (activeUserId !== requestedUserId) return;
         if (data.conversation) {
             upsertConversation(data.conversation);
         }
+
+        const history = appendCachedMessage(conversationId, data.reply, 'assistant');
         if (activeConversationId !== conversationId) return;
 
-        loadingDiv.innerText = data.reply || `Error: ${data.error || 'Failed to get response'}`;
+        if (loadingDiv.isConnected) {
+            loadingDiv.innerText = data.reply;
+        } else {
+            renderConversationHistory(history);
+        }
     }
     catch (error) {
+        conversationHistoryCache.delete(conversationId);
         if (activeConversationId === conversationId) {
-            loadingDiv.innerText = 'Error connecting to server.';
+            loadingDiv.innerText = error.message === 'Failed to get response.'
+                ? 'Error connecting to server.'
+                : `Error: ${error.message}`;
         }
     } finally {
         isSendingMessage = false;
