@@ -8,7 +8,7 @@ let finalSpeechTranscript = '';
 let shouldIgnoreSpeechResults = false;
 let speechErrorMessage = '';
 let speechStatusTimer = null;
-let isRequestingMicrophoneAccess = false;
+let isStartingSpeechRecognition = false;
 let activeConversationId = null;
 let conversations = [];
 const conversationHistoryCache = new Map();
@@ -474,7 +474,7 @@ function setSpeechStatus(message, isError = false) {
     status.classList.toggle('is-error', isError);
 
     // Keep the live listening state visible, but clear completed states after four seconds.
-    if (message && !isListening && !isRequestingMicrophoneAccess) {
+    if (message && !isListening && !isStartingSpeechRecognition) {
         const displayedMessage = message;
         speechStatusTimer = window.setTimeout(() => {
             if (!isListening && status.textContent === displayedMessage) {
@@ -511,12 +511,12 @@ function updateSpeechButton() {
     if (!button) return;
 
     button.classList.toggle('is-listening', isListening);
-    button.classList.toggle('is-requesting', isRequestingMicrophoneAccess);
+    button.classList.toggle('is-requesting', isStartingSpeechRecognition);
     button.setAttribute('aria-pressed', String(isListening));
-    button.setAttribute('aria-busy', String(isRequestingMicrophoneAccess));
+    button.setAttribute('aria-busy', String(isStartingSpeechRecognition));
 
-    const label = isRequestingMicrophoneAccess
-        ? 'Requesting microphone permission'
+    const label = isStartingSpeechRecognition
+        ? 'Starting voice input'
         : isListening
             ? 'Stop voice input'
             : 'Start voice input';
@@ -532,39 +532,14 @@ function getSpeechUnavailableMessage() {
     return 'Voice input is not supported in this browser. Try Chrome or use your keyboard\'s dictation.';
 }
 
-function getMicrophoneAccessErrorMessage(error) {
+function getSpeechStartErrorMessage(error) {
     const errorMessages = {
         NotAllowedError: 'Microphone permission was denied. Allow microphone access in your browser settings and try again.',
-        NotFoundError: 'No microphone was found. Connect one and try again.',
-        NotReadableError: 'Your microphone is being used by another app. Close it and try again.',
         SecurityError: 'Voice input requires an HTTPS connection. Open the secure version of this site and try again.',
-        AbortError: 'Microphone access was interrupted. Please try again.'
+        InvalidStateError: 'Voice input is still closing. Please try again in a moment.'
     };
 
-    return errorMessages[error?.name] || 'Unable to access your microphone. Please try again.';
-}
-
-async function requestMicrophoneAccess() {
-    if (!window.isSecureContext) {
-        setSpeechStatus(getSpeechUnavailableMessage(), true);
-        return false;
-    }
-
-    if (!navigator.mediaDevices?.getUserMedia) {
-        setSpeechStatus('Microphone access is unavailable in this browser.', true);
-        return false;
-    }
-
-    let stream;
-    try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        return true;
-    } catch (error) {
-        setSpeechStatus(getMicrophoneAccessErrorMessage(error), true);
-        return false;
-    } finally {
-        stream?.getTracks().forEach((track) => track.stop());
-    }
+    return errorMessages[error?.name] || 'Voice input could not start. Please try again.';
 }
 
 function initializeSpeechRecognition(showUnavailableMessage = false) {
@@ -591,6 +566,7 @@ function initializeSpeechRecognition(showUnavailableMessage = false) {
     speechRecognition.lang = navigator.language || 'en-US';
 
     speechRecognition.onstart = () => {
+        isStartingSpeechRecognition = false;
         isListening = true;
         shouldIgnoreSpeechResults = false;
         speechErrorMessage = '';
@@ -620,6 +596,7 @@ function initializeSpeechRecognition(showUnavailableMessage = false) {
     };
 
     speechRecognition.onerror = (event) => {
+        isStartingSpeechRecognition = false;
         if (event.error === 'aborted') return;
 
         const errorMessages = {
@@ -639,6 +616,7 @@ function initializeSpeechRecognition(showUnavailableMessage = false) {
     };
 
     speechRecognition.onend = () => {
+        isStartingSpeechRecognition = false;
         isListening = false;
         updateSpeechButton();
 
@@ -675,7 +653,7 @@ function stopSpeechRecognition(discardPendingResults = false) {
     }
 }
 
-async function toggleSpeechRecognition() {
+function toggleSpeechRecognition() {
     const input = document.getElementById('userInput');
 
     if (isListening) {
@@ -685,7 +663,7 @@ async function toggleSpeechRecognition() {
         return;
     }
 
-    if (isRequestingMicrophoneAccess) return;
+    if (isStartingSpeechRecognition) return;
 
     if (!speechRecognition && !initializeSpeechRecognition(true)) {
         return;
@@ -696,26 +674,17 @@ async function toggleSpeechRecognition() {
     shouldIgnoreSpeechResults = false;
     speechErrorMessage = '';
     scrollMessageInputToEnd(input);
-    isRequestingMicrophoneAccess = true;
+    isStartingSpeechRecognition = true;
     updateSpeechButton();
-    setSpeechStatus('Requesting microphone access...');
-
-    const hasMicrophoneAccess = await requestMicrophoneAccess();
-    isRequestingMicrophoneAccess = false;
-    updateSpeechButton();
-    if (!hasMicrophoneAccess) return;
+    setSpeechStatus('Starting voice input...');
 
     try {
         speechRecognition.start();
     } catch (error) {
+        isStartingSpeechRecognition = false;
         isListening = false;
         updateSpeechButton();
-        setSpeechStatus(
-            error?.name === 'NotAllowedError' || error?.name === 'SecurityError'
-                ? getMicrophoneAccessErrorMessage(error)
-                : 'Voice input is still closing. Please try again in a moment.',
-            true
-        );
+        setSpeechStatus(getSpeechStartErrorMessage(error), true);
     }
 }
 
