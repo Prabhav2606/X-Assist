@@ -18,7 +18,6 @@ CORS(app)
 REGION = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
 MODEL_ID = "us.amazon.nova-micro-v1:0"
 USERS_TABLE = "NovaChatUsers"
-LEGACY_MESSAGES_TABLE = "NovaChatMessages"
 CONVERSATIONS_TABLE = "NovaChatConversations"
 CONVERSATION_MESSAGES_TABLE = "NovaChatConversationMessages"
 DEFAULT_CONVERSATION_TITLE = "New chat"
@@ -53,17 +52,6 @@ def init_db():
         USERS_TABLE,
         [{"AttributeName": "email", "KeyType": "HASH"}],
         [{"AttributeName": "email", "AttributeType": "S"}]
-    )
-    create_table_if_needed(
-        LEGACY_MESSAGES_TABLE,
-        [
-            {"AttributeName": "user_id", "KeyType": "HASH"},
-            {"AttributeName": "timestamp", "KeyType": "RANGE"}
-        ],
-        [
-            {"AttributeName": "user_id", "AttributeType": "S"},
-            {"AttributeName": "timestamp", "AttributeType": "N"}
-        ]
     )
     create_table_if_needed(
         CONVERSATIONS_TABLE,
@@ -127,12 +115,6 @@ def make_conversation_title(text):
     if len(title) <= 54:
         return title
     return f"{title[:51].rstrip()}..."
-
-def get_conversation_title_from_messages(messages):
-    for message in messages:
-        if message.get("role") == "user":
-            return make_conversation_title(message.get("text_content"))
-    return DEFAULT_CONVERSATION_TITLE
 
 def to_public_conversation(conversation):
     return {
@@ -254,34 +236,6 @@ def ensure_user_conversations(user_id):
     if conversations:
         return conversations
 
-    # Copy pre-sidebar history once into an independent conversation without deleting it.
-    legacy_table = get_dynamo_resource().Table(LEGACY_MESSAGES_TABLE)
-    legacy_messages = get_all_query_items(legacy_table, Key("user_id").eq(user_id))
-    if legacy_messages:
-        conversation_id = f"legacy-{uuid.uuid5(uuid.NAMESPACE_URL, user_id).hex}"
-        messages_table = get_dynamo_resource().Table(CONVERSATION_MESSAGES_TABLE)
-        with messages_table.batch_writer() as batch:
-            for message in legacy_messages:
-                batch.put_item(
-                    Item={
-                        "conversation_id": conversation_id,
-                        "timestamp": message["timestamp"],
-                        "user_id": user_id,
-                        "role": message["role"],
-                        "text_content": message["text_content"]
-                    }
-                )
-
-        conversation = {
-            "user_id": user_id,
-            "conversation_id": conversation_id,
-            "title": get_conversation_title_from_messages(legacy_messages),
-            "created_at": legacy_messages[0]["timestamp"],
-            "updated_at": legacy_messages[-1]["timestamp"]
-        }
-        get_dynamo_resource().Table(CONVERSATIONS_TABLE).put_item(Item=conversation)
-        return [conversation]
-
     conversation, _ = create_conversation(user_id)
     return [conversation]
 
@@ -340,26 +294,12 @@ def clear_conversation(user_id, conversation):
     }
     return cleared_conversation, [to_history_message(greeting)]
 
-def delete_legacy_messages(user_id):
-    table = get_dynamo_resource().Table(LEGACY_MESSAGES_TABLE)
-    messages = get_all_query_items(table, Key("user_id").eq(user_id))
-    with table.batch_writer() as batch:
-        for message in messages:
-            batch.delete_item(
-                Key={"user_id": user_id, "timestamp": message["timestamp"]}
-            )
-
 def delete_conversation(user_id, conversation):
     conversation_id = conversation["conversation_id"]
     delete_conversation_messages(conversation_id)
     get_dynamo_resource().Table(CONVERSATIONS_TABLE).delete_item(
         Key={"user_id": user_id, "conversation_id": conversation_id}
     )
-
-    # Prevent a deleted migrated legacy chat from being imported again on next sign-in.
-    legacy_conversation_id = f"legacy-{uuid.uuid5(uuid.NAMESPACE_URL, user_id).hex}"
-    if conversation_id == legacy_conversation_id:
-        delete_legacy_messages(user_id)
 
 def delete_user_conversations(user_id):
     conversations = get_user_conversations(user_id)
@@ -470,9 +410,8 @@ def delete_account():
         if not item or item.get('password_hash') != hashed_pw:
             return jsonify({"error": "Incorrect password."}), 401
             
-        # 2. Delete every conversation and the pre-sidebar message history.
+        # 2. Delete every current-format conversation and its messages.
         delete_user_conversations(user_id)
-        delete_legacy_messages(user_id)
 
         # 3. Delete the user from the Users table.
         users_table.delete_item(
@@ -520,7 +459,6 @@ def create_new_conversation():
         return jsonify({"error": "Unauthorized"}), 401
 
     try:
-        # The sign-in list request already handles a legacy-history migration.
         conversation, history = create_conversation(user_id)
         return jsonify({
             "conversation": to_public_conversation(conversation),
