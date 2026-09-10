@@ -117,14 +117,17 @@ function showTemporaryChatTouchFeedback() {
     const toggle = document.getElementById('temporaryChatToggle');
     const usesTouchPrimaryPointer = window.matchMedia?.('(hover: none) and (pointer: coarse)').matches;
     if (!toggle || !usesTouchPrimaryPointer) return;
+    const keepActiveColor = isTemporaryChat;
 
     if (temporaryChatTouchFeedbackTimer) {
         window.clearTimeout(temporaryChatTouchFeedbackTimer);
     }
 
     toggle.classList.add('is-touch-activating');
+    toggle.classList.toggle('is-touch-active-feedback', keepActiveColor);
     temporaryChatTouchFeedbackTimer = window.setTimeout(() => {
         toggle.classList.remove('is-touch-activating');
+        toggle.classList.remove('is-touch-active-feedback');
         temporaryChatTouchFeedbackTimer = null;
     }, TEMPORARY_CHAT_TOUCH_FEEDBACK_DURATION);
 }
