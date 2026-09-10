@@ -190,6 +190,8 @@ button {
 }
 
 .chat-container {
+  position: relative;
+  z-index: 0;
   width: 100%;
   max-width: 720px;
   height: 100%;
@@ -286,6 +288,11 @@ button {
   border-color: rgba(148, 175, 188, 0.16);
 }
 
+.sidebar-toggle-btn:hover,
+.sidebar-close-btn:hover {
+  border-color: transparent;
+}
+
 .sidebar-icon-btn:active {
   transform: scale(0.94);
 }
@@ -368,20 +375,24 @@ button {
 }
 
 .conversation-item {
-  width: auto;
+  width: 100%;
   min-width: 0;
   flex: 1;
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 10px 11px;
   overflow: hidden;
   color: #c8d4d9;
   text-align: left;
   background: transparent;
   border: 0;
-  border-radius: 10px 0 0 10px;
+  border-radius: 10px;
   cursor: pointer;
   font-size: 13px;
   line-height: 1.35;
+  -webkit-touch-callout: none;
+  touch-action: pan-y;
   transition: background-color 0.18s, border-color 0.18s, color 0.18s;
 }
 
@@ -390,38 +401,101 @@ button {
   color: #ffffff;
 }
 
-.conversation-delete-btn {
-  width: 35px;
-  min-width: 35px;
-  padding: 0;
-  color: #8397a1;
-  background: transparent;
-  border: 0;
-  border-radius: 0 10px 10px 0;
-  cursor: pointer;
-  transition: color 0.18s, background-color 0.18s, border-color 0.18s, transform 0.18s;
-}
-
-.conversation-delete-btn svg {
-  width: 16px;
-  height: 16px;
-  position: relative;
-  top: 2px;
-}
-
-.conversation-delete-btn:hover {
-  color: #ffb1b7;
-}
-
-.conversation-delete-btn:active {
-  transform: scale(0.94);
-}
-
 .conversation-item-title {
   display: block;
+  min-width: 0;
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.conversation-pin-indicator {
+  display: inline-flex;
+  flex: 0 0 15px;
+  align-items: center;
+  justify-content: center;
+  color: var(--green);
+}
+
+.conversation-pin-indicator svg {
+  width: 15px;
+  height: 15px;
+}
+
+.conversation-context-menu {
+  position: fixed;
+  z-index: 1100;
+  top: 0;
+  left: 0;
+  width: 140px;
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 100% 0, rgba(0, 168, 132, 0.13), transparent 46%),
+    #16242c;
+  border: 1px solid rgba(148, 175, 188, 0.22);
+  border-radius: 15px;
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.38);
+  transform: translateY(-5px) scale(0.98);
+  transform-origin: top left;
+  transition: opacity 0.15s ease, transform 0.18s cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 0.18s;
+}
+
+.conversation-context-menu.is-open {
+  pointer-events: auto;
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0) scale(1);
+  transition-delay: 0s;
+}
+
+.conversation-context-action {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 11px;
+  color: #d4e0e4;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: color 0.18s, background-color 0.18s, border-color 0.18s;
+}
+
+.conversation-context-action svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+}
+
+.conversation-context-action:hover {
+  color: #ffffff;
+  background: rgba(148, 175, 188, 0.11);
+}
+
+.conversation-context-delete {
+  color: var(--danger);
+}
+
+.conversation-context-delete:hover {
+  color: #ffb1b7;
+  background: rgba(236, 106, 116, 0.12);
+}
+
+.conversation-context-divider {
+  height: 1px;
+  margin: 3px 5px;
+  background: rgba(148, 175, 188, 0.18);
 }
 
 .conversation-list-empty {
@@ -437,6 +511,8 @@ button {
 }
 
 .chat-header {
+  position: relative;
+  z-index: 6;
   padding: 12px 16px;
   display: flex;
   justify-content: space-between;
@@ -448,6 +524,7 @@ button {
 
 .chat-header-leading {
   min-width: 0;
+  flex: 1 1 auto;
   gap: 10px;
 }
 
@@ -477,12 +554,167 @@ button {
   white-space: nowrap;
 }
 
-.header-controls {
+.header-actions {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
+  flex: 0 0 auto;
   align-items: center;
+  gap: 4px;
+}
+
+.header-menu {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+}
+
+.temporary-chat-toggle {
+  width: 35px;
+  height: 35px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: color 0.2s, background-color 0.2s, border-color 0.2s, transform 0.2s, opacity 0.2s;
+}
+
+.temporary-chat-toggle svg {
+  width: 17px;
+  height: 17px;
+}
+
+.temporary-chat-toggle:hover:not(:disabled) {
+  color: #ffffff;
+  background: rgba(148, 175, 188, 0.12);
+}
+
+.temporary-chat-toggle.is-active {
+  color: var(--green);
+}
+
+.temporary-chat-toggle:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.temporary-chat-toggle:disabled {
+  cursor: wait;
+  opacity: 0.5;
+}
+
+.header-menu-toggle {
+  width: 35px;
+  height: 35px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: color 0.2s, background-color 0.2s, border-color 0.2s, transform 0.2s;
+}
+
+.header-menu-toggle svg {
+  width: 20px;
+  height: 20px;
+}
+
+.header-menu-toggle:hover,
+.header-menu-toggle[aria-expanded="true"] {
+  color: #ffffff;
+  background: rgba(148, 175, 188, 0.12);
+  border-color: transparent;
+}
+
+.header-menu-toggle:active {
+  transform: scale(0.95);
+}
+
+.header-actions-menu {
+  position: absolute;
+  top: calc(100% + 9px);
+  right: 0;
+  width: 170px;
+  display: grid;
+  gap: 3px;
+  padding: 7px;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 100% 0, rgba(0, 168, 132, 0.16), transparent 42%),
+    #16242c;
+  border: 1px solid rgba(148, 175, 188, 0.22);
+  border-radius: 15px;
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.35);
+  transform: translateY(-7px) scale(0.97);
+  transform-origin: top right;
+  transition: opacity 0.16s ease, transform 0.2s cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 0.2s;
+}
+
+.header-actions-menu.is-open {
+  pointer-events: auto;
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0) scale(1);
+  transition-delay: 0s;
+}
+
+.header-menu-action {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 11px;
+  color: var(--text);
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: color 0.18s, background-color 0.18s, border-color 0.18s;
+}
+
+.header-menu-action svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+}
+
+.clear-chat-action {
+  color: var(--warning);
+}
+
+.clear-chat-action:hover {
+  background: rgba(255, 212, 121, 0.1);
+  border-color: rgba(255, 212, 121, 0.16);
+}
+
+.sign-out-action {
+  color: #b8dcf8;
+}
+
+.sign-out-action:hover {
+  background: rgba(111, 183, 239, 0.1);
+  border-color: rgba(111, 183, 239, 0.17);
+}
+
+.delete-account-action {
+  color: #ffc1c5;
+}
+
+.delete-account-action:hover {
+  background: rgba(236, 106, 116, 0.11);
+  border-color: rgba(236, 106, 116, 0.18);
 }
 
 .btn-small {
@@ -516,28 +748,6 @@ button {
 .deleteAccount-btn:hover {
   background: var(--danger-dark);
   border-color: var(--danger);
-}
-
-.signOut-btn {
-  color: #b8dcf8;
-  background: rgba(47, 128, 217, 0.16);
-  border-color: rgba(111, 183, 239, 0.3);
-}
-
-.signOut-btn:hover {
-  background: rgba(47, 128, 217, 0.27);
-  border-color: var(--blue-hover);
-}
-
-.clearChat-btn {
-  color: var(--warning);
-  background: rgba(83, 67, 33, 0.55);
-  border-color: rgba(255, 212, 121, 0.32);
-}
-
-.clearChat-btn:hover {
-  background: #5b4925;
-  border-color: var(--warning);
 }
 
 .chat-box {
@@ -709,11 +919,14 @@ button.send-btn:active,
 .speech-btn:focus-visible,
 button.send-btn:focus-visible,
 .btn-small:focus-visible,
+.temporary-chat-toggle:focus-visible,
+.header-menu-toggle:focus-visible,
+.header-menu-action:focus-visible,
 .auth-btn:focus-visible,
 .sidebar-icon-btn:focus-visible,
 .new-chat-btn:focus-visible,
 .conversation-item:focus-visible,
-.conversation-delete-btn:focus-visible {
+.conversation-context-action:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 3px;
 }
@@ -744,6 +957,10 @@ button.send-btn:focus-visible,
 
 #clearChatModal {
   background: transparent;
+  backdrop-filter: none;
+}
+
+#renameConversationModal {
   backdrop-filter: none;
 }
 
@@ -788,9 +1005,19 @@ button.send-btn:focus-visible,
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.42);
 }
 
+.rename-conversation-modal {
+  width: min(100%, 360px);
+  padding: 28px;
+  text-align: center;
+  background: var(--panel);
+  border: 1px solid rgba(0, 168, 132, 0.38);
+  border-radius: 22px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.42);
+}
+
 .delete-modal h3,
 .delete-conversation-modal h3 {
-  margin-bottom: 12px;
+  margin-bottom: 18px;
   color: #ff9ca3;
 }
 
@@ -841,6 +1068,35 @@ button.send-btn:focus-visible,
   color: #bfccd2;
   font-size: 14px;
   line-height: 1.55;
+}
+
+.rename-conversation-modal h3 {
+  margin-bottom: 20px;
+  color: var(--green);
+}
+
+.rename-conversation-modal p {
+  margin-bottom: 18px;
+  color: #bfccd2;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.rename-conversation-input {
+  margin-bottom: 18px;
+  text-align: left;
+}
+
+.rename-conversation-error {
+  display: none;
+  margin: 0 0 12px !important;
+  color: var(--danger) !important;
+  font-size: 13px !important;
+  line-height: 1.45 !important;
+}
+
+.rename-conversation-error:not(:empty) {
+  display: block;
 }
 
 .delete-password-field {
@@ -923,6 +1179,17 @@ button.send-btn:focus-visible,
 .delete-conversation-modal-actions {
   display: flex;
   gap: 10px;
+}
+
+.rename-conversation-modal-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.rename-conversation-modal-actions .btn-small {
+  flex: 1;
+  padding: 12px;
+  font-size: 12px;
 }
 
 .delete-conversation-modal .delete-conversation-error {
@@ -1086,9 +1353,9 @@ button.send-btn:focus-visible,
   }
 
   .chat-header {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 12px;
+    align-items: center;
+    flex-direction: row;
+    gap: 10px;
   }
 
   #headerUserName {
@@ -1099,21 +1366,12 @@ button.send-btn:focus-visible,
     max-width: min(58vw, 330px);
   }
 
-  .header-controls {
-    width: 100%;
-    justify-content: flex-start;
-  }
-
   .chat-box {
     padding: 16px;
   }
 }
 
 @media (max-width: 430px) {
-  .header-controls {
-    gap: 6px;
-  }
-
   .btn-small {
     flex: 1;
     padding: 8px 7px;
