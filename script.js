@@ -27,6 +27,7 @@ let suppressConversationClickUntil = 0;
 let isSendingMessage = false;
 let isTemporaryChat = false;
 let lastSavedConversationId = null;
+let temporaryChatTouchFeedbackTimer = null;
 const PASSWORD_REVEAL_DURATION = 400;
 const DELETE_CONVERSATION_TITLE_LIMIT = 36;
 const CONVERSATION_TITLE_MAX_LENGTH = 80;
@@ -34,6 +35,7 @@ const CONVERSATION_LONG_PRESS_DELAY = 550;
 const CONVERSATION_LONG_PRESS_MOVE_TOLERANCE = 12;
 const TEMPORARY_CONVERSATION_ID = '__temporary_chat__';
 const TEMPORARY_CONTEXT_MESSAGE_LIMIT = 5;
+const TEMPORARY_CHAT_TOUCH_FEEDBACK_DURATION = 300;
 const passwordInputStates = new WeakMap();
 
 function getFirstName(name) {
@@ -111,6 +113,22 @@ function updateTemporaryChatToggle() {
         : 'Start temporary chat';
 }
 
+function showTemporaryChatTouchFeedback() {
+    const toggle = document.getElementById('temporaryChatToggle');
+    const usesTouchPrimaryPointer = window.matchMedia?.('(hover: none) and (pointer: coarse)').matches;
+    if (!toggle || !usesTouchPrimaryPointer) return;
+
+    if (temporaryChatTouchFeedbackTimer) {
+        window.clearTimeout(temporaryChatTouchFeedbackTimer);
+    }
+
+    toggle.classList.add('is-touch-activating');
+    temporaryChatTouchFeedbackTimer = window.setTimeout(() => {
+        toggle.classList.remove('is-touch-activating');
+        temporaryChatTouchFeedbackTimer = null;
+    }, TEMPORARY_CHAT_TOUCH_FEEDBACK_DURATION);
+}
+
 function getTemporaryGreeting() {
     return `Hello ${getFirstName(activeUserName)}! How can I help you today?`;
 }
@@ -173,6 +191,7 @@ async function endTemporaryChat() {
 async function toggleTemporaryChat() {
     if (isSendingMessage) return;
 
+    showTemporaryChatTouchFeedback();
     if (isTemporaryChat) {
         await endTemporaryChat();
     } else {
@@ -592,15 +611,13 @@ async function initializeConversations() {
 }
 
 async function createNewChat() {
-    if (isTemporaryChat) {
-        startTemporaryChat();
-        return;
-    }
-
     if (!activeUserId || isCreatingConversation || isLoadingConversations) return;
 
     const requestedUserId = activeUserId;
     const newChatButton = document.getElementById('newChatBtn');
+    const wasTemporaryChat = isTemporaryChat;
+    if (wasTemporaryChat) stopSpeechRecognition(true);
+
     isCreatingConversation = true;
     if (newChatButton) newChatButton.disabled = true;
     setConversationStatus('');
@@ -617,6 +634,11 @@ async function createNewChat() {
         }
         if (activeUserId !== requestedUserId) return;
 
+        if (wasTemporaryChat) {
+            isTemporaryChat = false;
+            conversationHistoryCache.delete(TEMPORARY_CONVERSATION_ID);
+            updateTemporaryChatToggle();
+        }
         activeConversationId = data.conversation.id;
         lastSavedConversationId = activeConversationId;
         upsertConversation(data.conversation);
