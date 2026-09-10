@@ -1,594 +1,235 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import boto3
-from boto3.dynamodb.conditions import Key
-import json
-import os
-import hashlib
-import re
-import time
-import uuid
-from decimal import Decimal
+<!DOCTYPE html>
 
-app = Flask(__name__, static_folder='.', static_url_path='')
-CORS(app)
+<html lang="en">
 
-# --- CONFIGURATION ---
-# When deployed on Render, boto3 will automatically read your AWS keys from environment variables.
-REGION = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-MODEL_ID = "us.amazon.nova-micro-v1:0"
-USERS_TABLE = "NovaChatUsers"
-CONVERSATIONS_TABLE = "NovaChatConversations"
-CONVERSATION_MESSAGES_TABLE = "NovaChatConversationMessages"
-DEFAULT_CONVERSATION_TITLE = "New chat"
-MODEL_CONTEXT_MESSAGE_LIMIT = 5
+    <head>
 
-bedrock_client = boto3.client("bedrock-runtime", region_name=REGION)
-dynamodb_client = boto3.client("dynamodb", region_name=REGION)
-dynamodb_resource = boto3.resource("dynamodb", region_name=REGION)
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
 
-def get_dynamo_resource():
-    # Reuse one SDK resource so DynamoDB connections can stay pooled between requests.
-    return dynamodb_resource
+        <title>Assist</title>
 
-# --- DATABASE FUNCTIONS ---
+        <link rel="icon" type="image/svg+xml" href="favicon.svg">
+        <link rel="stylesheet" href="style.css">
 
-def create_table_if_needed(table_name, key_schema, attribute_definitions):
-    try:
-        dynamodb_client.create_table(
-            TableName=table_name,
-            KeySchema=key_schema,
-            AttributeDefinitions=attribute_definitions,
-            BillingMode="PAY_PER_REQUEST"
-        )
-        print(f"Creating {table_name} in AWS... (This takes a few seconds)")
-        get_dynamo_resource().Table(table_name).wait_until_exists()
-    except dynamodb_client.exceptions.ResourceInUseException:
-        pass
+    </head>
 
-def init_db():
-    """Creates DynamoDB tables in AWS if they do not already exist."""
-    create_table_if_needed(
-        USERS_TABLE,
-        [{"AttributeName": "email", "KeyType": "HASH"}],
-        [{"AttributeName": "email", "AttributeType": "S"}]
-    )
-    create_table_if_needed(
-        CONVERSATIONS_TABLE,
-        [
-            {"AttributeName": "user_id", "KeyType": "HASH"},
-            {"AttributeName": "conversation_id", "KeyType": "RANGE"}
-        ],
-        [
-            {"AttributeName": "user_id", "AttributeType": "S"},
-            {"AttributeName": "conversation_id", "AttributeType": "S"}
-        ]
-    )
-    create_table_if_needed(
-        CONVERSATION_MESSAGES_TABLE,
-        [
-            {"AttributeName": "conversation_id", "KeyType": "HASH"},
-            {"AttributeName": "timestamp", "KeyType": "RANGE"}
-        ],
-        [
-            {"AttributeName": "conversation_id", "AttributeType": "S"},
-            {"AttributeName": "timestamp", "AttributeType": "N"}
-        ]
-    )
+    <body>
 
-def current_timestamp():
-    return Decimal(str(time.time()))
+        <!-- Sign In / Sign Up Screen -->
+        <div class="auth-screen" id="authScreen">
+            <h1 class="welcome-title is-writing" aria-label="Welcome to X Assist">
+                <svg class="welcome-title-art" viewBox="0 40 900 100" aria-hidden="true" focusable="false">
+                    <path class="welcome-stroke" style="--delay: 0ms; --duration: 340ms;" transform="translate(10 0)" d="M 34 52 C 40 78 44 103 51 122 C 59 102 68 78 78 54 C 79 80 84 105 94 122 C 102 99 113 75 126 53" />
+                    <path class="welcome-stroke" style="--delay: 300ms; --duration: 190ms;" d="M 132 110 C 134 97 143 89 152 94 C 162 100 155 110 140 109 C 135 109 132 108 130 106 C 132 121 145 126 157 120 C 164 117 169 113 173 108" />
+                    <path class="welcome-stroke" style="--delay: 470ms; --duration: 240ms;" d="M 180 110 C 187 91 194 57 206 54 C 216 52 217 63 211 75 C 205 87 196 95 188 100 C 183 108 182 118 189 121 C 197 125 205 118 212 109" />
+                    <path class="welcome-stroke" style="--delay: 680ms; --duration: 170ms;" d="M 241 91 C 230 86 218 96 216 107 C 213 118 223 126 234 123 C 240 121 244 117 246 112" />
+                    <path class="welcome-stroke" style="--delay: 830ms; --duration: 180ms;" d="M 257 108 C 258 97 267 91 276 94 C 287 97 288 112 282 120 C 275 129 262 125 258 115 C 257 112 257 110 257 108" />
+                    <path class="welcome-stroke" style="--delay: 980ms; --duration: 330ms;" d="M 293 112 C 295 101 302 94 309 97 C 317 100 313 113 315 119 C 318 111 324 97 332 98 C 341 100 337 114 339 120 C 342 112 349 99 357 101 C 366 103 362 117 367 120 C 373 122 379 116 384 108" />
+                    <path class="welcome-stroke" style="--delay: 1280ms; --duration: 180ms;" d="M 386 110 C 388 98 397 91 406 95 C 415 100 409 110 394 109 C 390 109 387 108 385 106 C 387 120 400 125 412 120" />
+                    <path class="welcome-stroke" style="--delay: 1500ms; --duration: 160ms;" d="M 464 72 C 460 88 458 105 462 118 C 465 125 475 123 483 112" />
+                    <path class="welcome-stroke" style="--delay: 1630ms; --duration: 100ms;" d="M 454 92 C 466 88 480 89 491 92" />
+                    <path class="welcome-stroke" style="--delay: 1740ms; --duration: 180ms;" d="M 493 108 C 494 97 503 91 512 94 C 523 97 524 112 518 120 C 511 129 498 125 494 115 C 493 112 493 110 493 108" />
+                    <path class="welcome-stroke" style="--delay: 1980ms; --duration: 150ms;" d="M 568 54 C 580 75 594 100 609 123" />
+                    <path class="welcome-stroke" style="--delay: 2110ms; --duration: 150ms;" d="M 611 54 C 596 78 581 101 568 123" />
+                    <path class="welcome-stroke" style="--delay: 2300ms; --duration: 260ms;" d="M 651 123 C 659 99 669 73 679 54 C 690 78 696 102 700 123" />
+                    <path class="welcome-stroke" style="--delay: 2530ms; --duration: 110ms;" d="M 658 102 C 668 99 682 99 693 103" />
+                    <path class="welcome-stroke" style="--delay: 2640ms; --duration: 160ms;" d="M 735 96 C 727 89 715 92 713 100 C 711 107 720 109 728 112 C 738 116 736 124 728 126 C 718 128 710 123 707 117" />
+                    <path class="welcome-stroke" style="--delay: 2790ms; --duration: 160ms;" d="M 771 96 C 763 89 751 92 749 100 C 747 107 756 109 764 112 C 774 116 772 124 764 126 C 754 128 746 123 743 117" />
+                    <path class="welcome-stroke" style="--delay: 2940ms; --duration: 150ms;" d="M 790 97 C 788 106 787 117 791 122 C 796 126 803 119 808 111" />
+                    <path class="welcome-stroke" style="--delay: 3070ms; --duration: 70ms;" d="M 792 82 L 793 82" />
+                    <path class="welcome-stroke" style="--delay: 3160ms; --duration: 160ms;" d="M 844 96 C 836 89 824 92 822 100 C 820 107 829 109 837 112 C 847 116 845 124 837 126 C 827 128 819 123 816 117" />
+                    <path class="welcome-stroke" style="--delay: 3310ms; --duration: 160ms;" d="M 860 72 C 856 88 854 105 858 118 C 861 125 871 123 879 112" />
+                    <path class="welcome-stroke" style="--delay: 3440ms; --duration: 100ms;" d="M 850 92 C 862 88 876 89 887 92" />
+                </svg>
+            </h1>
+            <div class="auth-container">
 
-def get_all_query_items(table, key_condition, scan_index_forward=True):
-    query_args = {
-        "KeyConditionExpression": key_condition,
-        "ScanIndexForward": scan_index_forward
-    }
-    response = table.query(**query_args)
-    items = response.get("Items", [])
+                <h2 id="authTitle">Sign In</h2>
+                <div class="auth-error" id="authError"></div>
+                <div class="auth-success" id="authSuccess"></div>
+        
+            <input type="text" id="name" class="auth-input" placeholder="Name" style="display: none;">
+            <input type="email" id="email" class="auth-input" placeholder="Email Address">
 
-    while response.get("LastEvaluatedKey"):
-        response = table.query(
-            ExclusiveStartKey=response["LastEvaluatedKey"],
-            **query_args
-        )
-        items.extend(response.get("Items", []))
-
-    return items
-
-def get_first_name(name):
-    name_parts = str(name or "").split()
-    return name_parts[0] if name_parts else "there"
-
-def get_user_name(user_id):
-    users_table = get_dynamo_resource().Table(USERS_TABLE)
-    user_response = users_table.get_item(Key={"email": user_id})
-    return get_first_name(user_response.get("Item", {}).get("name"))
-
-def get_greeting(user_id):
-    return f"Hello {get_user_name(user_id)}! How can I help you today?"
-
-def make_conversation_title(text):
-    title = " ".join(str(text or "").split())
-    if not title:
-        return DEFAULT_CONVERSATION_TITLE
-    if len(title) <= 54:
-        return title
-    return f"{title[:51].rstrip()}..."
-
-def to_public_conversation(conversation):
-    return {
-        "id": conversation["conversation_id"],
-        "title": conversation.get("title", DEFAULT_CONVERSATION_TITLE),
-        "created_at": float(conversation.get("created_at", 0)),
-        "updated_at": float(conversation.get("updated_at", 0))
-    }
-
-def to_history_message(message):
-    return {
-        "role": message["role"],
-        "content": [{"text": message["text_content"]}]
-    }
-
-def to_history_messages(messages):
-    return [to_history_message(message) for message in messages]
-
-def make_conversation_message(user_id, conversation_id, role, text, timestamp=None):
-    return {
-        "conversation_id": conversation_id,
-        "timestamp": timestamp or current_timestamp(),
-        "user_id": user_id,
-        "role": role,
-        "text_content": text
-    }
-
-def get_conversation(user_id, conversation_id):
-    table = get_dynamo_resource().Table(CONVERSATIONS_TABLE)
-    return table.get_item(
-        Key={"user_id": user_id, "conversation_id": conversation_id}
-    ).get("Item")
-
-def get_user_conversations(user_id):
-    table = get_dynamo_resource().Table(CONVERSATIONS_TABLE)
-    conversations = get_all_query_items(table, Key("user_id").eq(user_id))
-    return sorted(
-        conversations,
-        key=lambda conversation: conversation.get("updated_at", Decimal("0")),
-        reverse=True
-    )
-
-def get_conversation_messages(conversation_id):
-    table = get_dynamo_resource().Table(CONVERSATION_MESSAGES_TABLE)
-    return get_all_query_items(table, Key("conversation_id").eq(conversation_id))
-
-def get_recent_conversation_messages(conversation_id, limit):
-    table = get_dynamo_resource().Table(CONVERSATION_MESSAGES_TABLE)
-    response = table.query(
-        KeyConditionExpression=Key("conversation_id").eq(conversation_id),
-        ScanIndexForward=False,
-        Limit=limit
-    )
-    # DynamoDB returns newest first here; Nova needs chronological messages.
-    return list(reversed(response.get("Items", [])))
-
-def update_conversation_activity(user_id, conversation_id, updated_at, title=None):
-    table = get_dynamo_resource().Table(CONVERSATIONS_TABLE)
-    update_expression = "SET updated_at = :updated_at"
-    expression_values = {":updated_at": updated_at}
-
-    if title is not None:
-        update_expression += ", title = :title"
-        expression_values[":title"] = title
-
-    table.update_item(
-        Key={"user_id": user_id, "conversation_id": conversation_id},
-        UpdateExpression=update_expression,
-        ExpressionAttributeValues=expression_values
-    )
-
-def save_conversation_message(user_id, conversation, role, text):
-    timestamp = current_timestamp()
-    conversation_id = conversation["conversation_id"]
-    message = make_conversation_message(
-        user_id,
-        conversation_id,
-        role,
-        text,
-        timestamp
-    )
-    messages_table = get_dynamo_resource().Table(CONVERSATION_MESSAGES_TABLE)
-    messages_table.put_item(Item=message)
-
-    title = None
-    if role == "user" and conversation.get("title") == DEFAULT_CONVERSATION_TITLE:
-        title = make_conversation_title(text)
-    update_conversation_activity(user_id, conversation_id, timestamp, title)
-
-    updated_conversation = {**conversation, "updated_at": timestamp}
-    if title is not None:
-        updated_conversation["title"] = title
-    return updated_conversation, message
-
-def create_conversation(user_id):
-    conversation_id = uuid.uuid4().hex
-    created_at = current_timestamp()
-    conversation = {
-        "user_id": user_id,
-        "conversation_id": conversation_id,
-        "title": DEFAULT_CONVERSATION_TITLE,
-        "created_at": created_at,
-        "updated_at": created_at
-    }
-    greeting = make_conversation_message(
-        user_id,
-        conversation_id,
-        "assistant",
-        get_greeting(user_id),
-        created_at
-    )
-
-    get_dynamo_resource().Table(CONVERSATIONS_TABLE).put_item(Item=conversation)
-    get_dynamo_resource().Table(CONVERSATION_MESSAGES_TABLE).put_item(Item=greeting)
-    return conversation, [to_history_message(greeting)]
-
-def ensure_user_conversations(user_id):
-    conversations = get_user_conversations(user_id)
-    if conversations:
-        return conversations
-
-    conversation, _ = create_conversation(user_id)
-    return [conversation]
-
-def load_history(user_id, conversation):
-    conversation_id = conversation["conversation_id"]
-    items = get_conversation_messages(conversation_id)
-    if not items:
-        greeting = make_conversation_message(
-            user_id,
-            conversation_id,
-            "assistant",
-            get_greeting(user_id)
-        )
-        get_dynamo_resource().Table(CONVERSATION_MESSAGES_TABLE).put_item(Item=greeting)
-        update_conversation_activity(user_id, conversation_id, greeting["timestamp"])
-        items = [greeting]
-
-    return to_history_messages(items)
-
-def delete_conversation_messages(conversation_id):
-    table = get_dynamo_resource().Table(CONVERSATION_MESSAGES_TABLE)
-    messages = get_conversation_messages(conversation_id)
-    with table.batch_writer() as batch:
-        for message in messages:
-            batch.delete_item(
-                Key={
-                    "conversation_id": conversation_id,
-                    "timestamp": message["timestamp"]
-                }
-            )
-
-def clear_conversation(user_id, conversation):
-    conversation_id = conversation["conversation_id"]
-    timestamp = current_timestamp()
-    greeting = make_conversation_message(
-        user_id,
-        conversation_id,
-        "assistant",
-        get_greeting(user_id),
-        timestamp
-    )
-
-    delete_conversation_messages(conversation_id)
-    update_conversation_activity(
-        user_id,
-        conversation_id,
-        timestamp,
-        DEFAULT_CONVERSATION_TITLE
-    )
-    get_dynamo_resource().Table(CONVERSATION_MESSAGES_TABLE).put_item(Item=greeting)
-
-    cleared_conversation = {
-        **conversation,
-        "title": DEFAULT_CONVERSATION_TITLE,
-        "updated_at": timestamp
-    }
-    return cleared_conversation, [to_history_message(greeting)]
-
-def delete_conversation(user_id, conversation):
-    conversation_id = conversation["conversation_id"]
-    delete_conversation_messages(conversation_id)
-    get_dynamo_resource().Table(CONVERSATIONS_TABLE).delete_item(
-        Key={"user_id": user_id, "conversation_id": conversation_id}
-    )
-
-def delete_user_conversations(user_id):
-    conversations = get_user_conversations(user_id)
-    conversations_table = get_dynamo_resource().Table(CONVERSATIONS_TABLE)
-
-    for conversation in conversations:
-        delete_conversation_messages(conversation["conversation_id"])
-
-    with conversations_table.batch_writer() as batch:
-        for conversation in conversations:
-            batch.delete_item(
-                Key={
-                    "user_id": user_id,
-                    "conversation_id": conversation["conversation_id"]
-                }
-            )
-
-# --- VALIDATION HELPERS ---
-
-def is_valid_email(email):
-    return re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email)
-
-def is_valid_password(password):
-    if len(password) < 8: return False
-    if not re.search(r"[A-Z]", password): return False
-    if not re.search(r"[a-z]", password): return False
-    if not re.search(r"\d", password): return False
-    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", password): return False
-    return True
-
-# --- AUTHENTICATION ROUTES ---
-
-@app.route("/api/signup", methods=["POST"])
-def signup():
-    data = request.json
-    name = data.get("name", "").strip()
-    email = data.get("email", "").strip().lower()
-    password = data.get("password", "").strip()
+            <!-- Password Field with Embedded Icon -->
+            <div style="position: relative; width: 100%; margin-bottom: 12px;">
+                <input type="password" id="password" class="auth-input" placeholder="Password" style="width: 100%; padding-right: 40px; margin-bottom: 0;">
     
-    if not is_valid_email(email):
-        return jsonify({"error": "Invalid email address format."}), 400
-    if not is_valid_password(password):
-        return jsonify({"error": "Password must be at least 8 characters long, include an uppercase letter, a lowercase letter, a number, and a special character."}), 400
+                <!-- Clickable Icon Wrapper (Updated with user-select: none and preventDefault) -->
+                <div onclick="togglePassword()" onmousedown="event.preventDefault()" style="position: absolute; right: 12px; top: 50%; transform: translateY(-50%); cursor: pointer; color: #787878; display: flex; align-items: center; justify-content: center; transition: color 0.2s; user-select: none; -webkit-user-select: none;" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#787878'">
+        
+                    <!-- Open Eye Icon -->
+                    <svg id="eyeOpen" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                        <circle cx="12" cy="12" r="3"></circle>
+                    </svg>
 
-    hashed_pw = hashlib.sha256(password.encode()).hexdigest()
+                    <!-- Closed Eye Icon (Hidden by default) -->
+                    <svg id="eyeClosed" style="display: none;" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                        <line x1="1" y1="1" x2="23" y2="23"></line>
+                    </svg>
+                </div>
+            </div>
 
-    try:
-        table = get_dynamo_resource().Table(USERS_TABLE)
+                <button class="auth-btn" id="primaryAuthBtn" onclick="signIn()">Sign In</button>
+                <button class="auth-btn secondary" id="secondaryAuthBtn" onclick="toggleMode()">Create an Account</button>
 
-        # Check if user exists
-        response = table.get_item(Key={'email': email})
-        if 'Item' in response:
-            return jsonify({"error": "An account with this email already exists."}), 400
-
-        table.put_item(
-            Item={
-                'name': name,
-                'email': email,
-                'password_hash': hashed_pw
-            }
-        )
-        return jsonify({"status": "success"})
-    except Exception as e:
-        print(f"DynamoDB Signup Error: {str(e)}")
-        return jsonify({"error": f"Database Connection Error: {str(e)}"}), 500
-
-
-@app.route("/api/signin", methods=["POST"])
-def signin():
-    data = request.json
-    email = data.get("email", "").strip().lower()
-    password = data.get("password", "").strip()
-    hashed_pw = hashlib.sha256(password.encode()).hexdigest()
-
-    try:
-        table = get_dynamo_resource().Table(USERS_TABLE)
-        response = table.get_item(Key={'email': email})
-        item = response.get('Item')
+            </div>
+        </div>
     
-        if item and item.get('password_hash') == hashed_pw:
-            user_name = item.get('name')
-            return jsonify({"status": "success", "user_id": email, "name": user_name})
-        else:
-            return jsonify({"error": "Invalid email or password"}), 401
+        <!-- Chat Screen -->
+        <div class="chat-app" id="chatApp">
+            <aside class="conversation-sidebar" id="conversationSidebar" aria-label="Conversations" aria-hidden="true">
+                    <div class="conversation-sidebar-header">
+                        <div class="conversation-sidebar-title">
+                            <span>Conversations</span>
+                        </div>
+                    <button type="button" class="sidebar-icon-btn" onclick="setConversationSidebarOpen(false)" aria-label="Close conversations" title="Close conversations">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                            <path d="m6 6 12 12M18 6 6 18"></path>
+                        </svg>
+                    </button>
+                </div>
+                <button type="button" class="new-chat-btn" id="newChatBtn" onclick="createNewChat()">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M12 5v14M5 12h14"></path>
+                    </svg>
+                    <span>New Chat</span>
+                </button>
+                <p class="conversation-sidebar-status" id="conversationSidebarStatus" role="status" aria-live="polite"></p>
+                <nav class="conversation-list" id="conversationList" aria-label="Saved conversations"></nav>
+            </aside>
+            <button type="button" class="conversation-sidebar-backdrop" id="conversationSidebarBackdrop" onclick="setConversationSidebarOpen(false)" aria-label="Close conversations"></button>
 
-    except Exception as e:
-        # This will catch AWS errors and send them to your browser console as JSON!
-        print(f"DynamoDB Signin Error: {str(e)}")
-        return jsonify({"error": f"Database Connection Error: {str(e)}"}), 500
-
-@app.route("/api/delete_account", methods=["POST"])
-def delete_account():
-    data = request.json
-    user_id = data.get("user_id")
-    password = data.get("password")
+            <div class="chat-container" id="chatScreen">
+                <div class="chat-header">
+                    <div class="chat-header-leading">
+                        <button type="button" class="sidebar-icon-btn sidebar-toggle-btn" id="conversationSidebarToggle" onclick="toggleConversationSidebar()" aria-label="Open conversations" aria-controls="conversationSidebar" aria-expanded="false" title="Open conversations">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                                <path d="M4 6h16M4 12h16M4 18h16"></path>
+                            </svg>
+                        </button>
+                        <div class="chat-header-titles">
+                            <span id="headerUserName">Loading...</span>
+                            <span class="active-conversation-title" id="activeConversationTitle">New chat</span>
+                        </div>
+                    </div>
+                    <div class="header-controls">
+                        <button class="btn-small deleteAccount-btn" onclick="deleteAccount()">Delete Account</button>
+                        <button class="btn-small signOut-btn" onclick="signOut()">Sign Out</button>
+                        <button class="btn-small clearChat-btn" onclick="clearChat()">Clear Chat</button>
+                    </div>
+                </div>
+                <div class="chat-box" id="chatBox"></div>
+                <p class="speech-status" id="speechStatus" role="status" aria-live="polite"></p>
+                <div class="input-area">
+                    <input type="text" id="userInput" name="chat-message" class="msg-input" placeholder="Ask anything..." autocomplete="off" autocapitalize="sentences" spellcheck="true" inputmode="text" onkeydown="if(event.key==='Enter') sendMessage()">
+                    <button type="button" class="speech-btn" id="speechBtn" onclick="toggleSpeechRecognition()" aria-label="Start voice input" aria-pressed="false" title="Start voice input">
+                        <svg class="speech-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <rect x="9" y="2" width="6" height="12" rx="3"></rect>
+                            <path d="M5 10a7 7 0 0 0 14 0"></path>
+                            <path d="M12 17v4"></path>
+                            <path d="M8 21h8"></path>
+                        </svg>
+                    </button>
+                    <button type="button" class="send-btn" onclick="sendMessage()" aria-label="Send message" title="Send message">
+                        <svg class="send-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                            <path d="M3.4 2.9a1 1 0 0 0-1.29 1.28l2.25 6.47a1 1 0 0 0 .81.66L12.6 12l-7.44.69a1 1 0 0 0-.81.66L2.1 19.82a1 1 0 0 0 1.29 1.28l17.94-8.18a1 1 0 0 0 0-1.82L3.4 2.9Z"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </div>
     
-    if not user_id or not password:
-        return jsonify({"error": "Email and password are required"}), 400
-        
-    hashed_pw = hashlib.sha256(password.encode()).hexdigest()
-        
-    try:
-        # 1. Verify user credentials first.
-        users_table = get_dynamo_resource().Table(USERS_TABLE)
-        response = users_table.get_item(Key={'email': user_id})
-        item = response.get('Item')
-        
-        if not item or item.get('password_hash') != hashed_pw:
-            return jsonify({"error": "Incorrect password."}), 401
-            
-        # 2. Delete every current-format conversation and its messages.
-        delete_user_conversations(user_id)
+        <script src="script.js"></script>
 
-        # 3. Delete the user from the Users table.
-        users_table.delete_item(
-            Key={'email': user_id}
-        )
-        
-        return jsonify({"status": "deleted"})
-        
-    except Exception as e:
-        print(f"DynamoDB Delete Error: {str(e)}")
-        return jsonify({"error": f"Database Connection Error: {str(e)}"}), 500
+        <!-- Secure Delete Account Model -->
+        <div id="deleteModel" class="modal-overlay" style="display: none;" onclick="closeModalOnBackdrop(event)">
+            <div class="delete-modal">
+                <h3>Delete Account</h3>
+                <p><br>Enter your password to permanently delete your account and chat history.<strong><br><br>This action cannot be undone!</strong></p>
+                <p id="deletePasswordError" class="delete-password-error" role="alert" aria-live="polite"></p>
+                <div class="delete-password-field">
+                    <input type="password" id="deletePassword" class="auth-input delete-modal-input" placeholder="Password" oninput="clearDeletePasswordError()">
+                    <button type="button" id="deletePasswordToggle" class="password-visibility-toggle" onclick="toggleDeletePassword()" onmousedown="event.preventDefault()" aria-label="Show password" aria-pressed="false" title="Show password">
+                        <svg id="deleteEyeOpen" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                            <circle cx="12" cy="12" r="3"></circle>
+                        </svg>
+                        <svg id="deleteEyeClosed" style="display: none;" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                            <line x1="1" y1="1" x2="23" y2="23"></line>
+                        </svg>
+                    </button>
+                </div>
+                <div class="delete-modal-actions">
+                    <button class="btn-small modal-cancel-btn" onclick="closeDeleteModel()">Cancel</button>
+                    <button class="btn-small deleteAccount-btn" onclick="confirmDeleteAccount()">Delete</button>
+                </div>
+            </div>
+        </div>
 
-# --- CHAT ROUTES ---
+        <!-- Clear Chat Confirmation Modal -->
+        <div id="clearChatModal" class="modal-overlay" style="display: none;" onclick="closeModalOnBackdrop(event)">
+            <div class="clear-chat-modal">
+                <h3>Clear Chat</h3>
+                <p>Are you sure you want to clear this conversation?</p>
+                <div class="clear-chat-modal-actions">
+                    <button class="btn-small modal-cancel-btn" onclick="closeClearChatModal()">Cancel</button>
+                    <button class="btn-small clear-chat-confirm-btn" onclick="confirmClearChat()">Clear Chat</button>
+                </div>
+            </div>
+        </div>
 
-@app.route("/")
-def home():
-    return app.send_static_file("index.html")
+        <!-- Delete Conversation Confirmation Modal -->
+        <div id="deleteConversationModal" class="modal-overlay" style="display: none;" onclick="closeModalOnBackdrop(event)" role="dialog" aria-modal="true" aria-labelledby="deleteConversationTitle">
+            <div class="delete-conversation-modal">
+                <h3 id="deleteConversationTitle">Delete Conversation</h3>
+                <p id="deleteConversationDescription"></p>
+                <p id="deleteConversationError" class="delete-conversation-error" role="alert" aria-live="polite"></p>
+                <div class="delete-conversation-modal-actions">
+                    <button type="button" id="deleteConversationCancelBtn" class="btn-small modal-cancel-btn" onclick="closeDeleteConversationModal()">Cancel</button>
+                    <button type="button" id="deleteConversationConfirmBtn" class="btn-small deleteAccount-btn" onclick="confirmDeleteConversation()">Delete</button>
+                </div>
+            </div>
+        </div>
 
-@app.route("/api/conversations", methods=["GET"])
-def list_conversations():
-    user_id = request.args.get("user_id")
-    include_active_history = request.args.get("include_active_history") == "true"
-    if not user_id:
-        return jsonify({"error": "Unauthorized"}), 401
+        <!-- Sign Out Confirmation Modal -->
+        <div id="signOutModal" class="modal-overlay" style="display: none;" onclick="closeModalOnBackdrop(event)">
+            <div class="sign-out-modal">
+                <h3>Sign Out</h3>
+                <p>Are you sure you want to sign out?</p>
+                <div class="sign-out-modal-actions">
+                    <button class="btn-small modal-cancel-btn" onclick="closeSignOutModal()">Cancel</button>
+                    <button class="btn-small sign-out-confirm-btn" onclick="confirmSignOut()">Sign Out</button>
+                </div>
+            </div>
+        </div>
 
-    try:
-        conversations = ensure_user_conversations(user_id)
-        response = {
-            "conversations": [to_public_conversation(conversation) for conversation in conversations]
-        }
-        if include_active_history and conversations:
-            active_conversation = conversations[0]
-            response["active_conversation"] = to_public_conversation(active_conversation)
-            response["history"] = load_history(user_id, active_conversation)
-        return jsonify(response)
-    except Exception as error:
-        print(f"DynamoDB conversation list error: {error}")
-        return jsonify({"error": "Failed to load conversations!"}), 500
+        <!-- Account Created Confirmation Modal -->
+        <div id="accountCreatedModal" class="modal-overlay" style="display: none;" onclick="confirmAccountCreationOnBackdrop(event)" role="dialog" aria-modal="true" aria-labelledby="accountCreatedTitle">
+            <div class="account-created-modal">
+                <h3 id="accountCreatedTitle">Account Created</h3>
+                <p>Your account has been created successfully.<br>You can now sign in.</p>
+                <div class="sign-out-modal-actions">
+                    <button type="button" id="accountCreatedOkBtn" class="btn-small account-created-confirm-btn" onclick="confirmAccountCreation()">OK</button>
+                </div>
+            </div>
+        </div>
 
-@app.route("/api/conversations", methods=["POST"])
-def create_new_conversation():
-    data = request.get_json(silent=True) or {}
-    user_id = data.get("user_id")
-    if not user_id:
-        return jsonify({"error": "Unauthorized"}), 401
+        <!-- Account Deleted Confirmation Modal -->
+        <div id="accountDeletedModal" class="modal-overlay" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="accountDeletedTitle">
+            <div class="sign-out-modal">
+                <h3 id="accountDeletedTitle">Account Deleted</h3>
+                <p>Your account and chat history have been permanently deleted.</p>
+                <div class="sign-out-modal-actions">
+                    <button type="button" id="accountDeletedOkBtn" class="btn-small sign-out-confirm-btn" onclick="confirmAccountDeletion()">OK</button>
+                </div>
+            </div>
+        </div>
 
-    try:
-        conversation, history = create_conversation(user_id)
-        return jsonify({
-            "conversation": to_public_conversation(conversation),
-            "history": history
-        }), 201
-    except Exception as error:
-        print(f"DynamoDB new conversation error: {error}")
-        return jsonify({"error": "Failed to create a new chat!"}), 500
+    </body>
 
-@app.route("/api/conversations/<conversation_id>", methods=["DELETE"])
-def delete_saved_conversation(conversation_id):
-    data = request.get_json(silent=True) or {}
-    user_id = data.get("user_id")
-    if not user_id:
-        return jsonify({"error": "Unauthorized"}), 401
-
-    try:
-        conversation = get_conversation(user_id, conversation_id)
-        if not conversation:
-            return jsonify({"error": "Conversation not found!"}), 404
-        delete_conversation(user_id, conversation)
-        return jsonify({"status": "deleted", "conversation_id": conversation_id})
-    except Exception as error:
-        print(f"DynamoDB delete conversation error: {error}")
-        return jsonify({"error": "Failed to delete this conversation!"}), 500
-
-@app.route("/api/history", methods=["GET"])
-def get_history():
-    user_id = request.args.get("user_id")
-    conversation_id = request.args.get("conversation_id")
-    if not user_id:
-        return jsonify({"error": "Unauthorized"}), 401
-    if not conversation_id:
-        return jsonify({"error": "A conversation is required"}), 400
-
-    try:
-        conversation = get_conversation(user_id, conversation_id)
-        if not conversation:
-            return jsonify({"error": "Conversation not found!"}), 404
-        return jsonify({"history": load_history(user_id, conversation)})
-    except Exception as error:
-        print(f"DynamoDB history error: {error}")
-        return jsonify({"error": "Failed to load this conversation!"}), 500
-
-@app.route("/api/clear", methods=["POST"])
-def clear_history():
-    data = request.get_json(silent=True) or {}
-    user_id = data.get("user_id")
-    conversation_id = data.get("conversation_id")
-    if not user_id:
-        return jsonify({"error": "Unauthorized"}), 401
-    if not conversation_id:
-        return jsonify({"error": "A conversation is required"}), 400
-
-    try:
-        conversation = get_conversation(user_id, conversation_id)
-        if not conversation:
-            return jsonify({"error": "Conversation not found!"}), 404
-        cleared_conversation, history = clear_conversation(user_id, conversation)
-        return jsonify({
-            "status": "cleared",
-            "conversation": to_public_conversation(cleared_conversation),
-            "history": history
-        })
-    except Exception as error:
-        print(f"DynamoDB clear conversation error: {error}")
-        return jsonify({"error": "Failed to clear this conversation!"}), 500
-
-@app.route("/api/chat", methods=["POST"])
-def chat():
-    data = request.get_json(silent=True) or {}
-    new_message_text = data.get("message", "").strip()
-    user_id = data.get("user_id")
-    conversation_id = data.get("conversation_id")
-
-    if not user_id:
-        return jsonify({"error": "Unauthorized"}), 401
-    if not conversation_id:
-        return jsonify({"error": "A conversation is required"}), 400
-    if not new_message_text:
-        return jsonify({"error": "No message provided"}), 400
-
-    conversation = get_conversation(user_id, conversation_id)
-    if not conversation:
-        return jsonify({"error": "Conversation not found!"}), 404
-
-    conversation, _ = save_conversation_message(
-        user_id,
-        conversation,
-        "user",
-        new_message_text
-    )
-    recent_messages = get_recent_conversation_messages(
-        conversation_id,
-        MODEL_CONTEXT_MESSAGE_LIMIT
-    )
-    api_messages = to_history_messages(recent_messages)
-    if api_messages and api_messages[0]["role"] == "assistant":
-        api_messages.pop(0)
-
-    payload = {
-        "messages": api_messages,
-        "inferenceConfig": {"maxTokens": 1024, "temperature": 0.7}
-    }
-
-    try:
-        response = bedrock_client.invoke_model(
-            modelId=MODEL_ID, contentType="application/json", accept="application/json", body=json.dumps(payload)
-        )
-        response_body = json.loads(response['body'].read())
-        assistant_reply = response_body['output']['message']['content'][0]['text']
-        conversation, _ = save_conversation_message(
-            user_id,
-            conversation,
-            "assistant",
-            assistant_reply
-        )
-        return jsonify({
-            "reply": assistant_reply,
-            "conversation": to_public_conversation(conversation)
-        })
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-try:
-    init_db()
-except Exception as e:
-    print("Database init skipped/failed:", e)
-
-if __name__ == "__main__":
-    print("Server starting on http://127.0.0.1:3008")
-    app.run(host="0.0.0.0", port=3008, debug=True)
+</html>
