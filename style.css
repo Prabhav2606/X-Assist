@@ -627,7 +627,14 @@ button {
   height: 20px;
 }
 
-.header-menu-toggle:hover,
+@media (hover: hover) {
+  .header-menu-toggle:hover {
+    color: #ffffff;
+    background: rgba(148, 175, 188, 0.12);
+    border-color: transparent;
+  }
+}
+
 .header-menu-toggle[aria-expanded="true"] {
   color: #ffffff;
   background: rgba(148, 175, 188, 0.12);
