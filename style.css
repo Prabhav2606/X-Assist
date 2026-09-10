@@ -592,6 +592,10 @@ button {
     color: #ffffff;
     background: rgba(148, 175, 188, 0.12);
   }
+
+  .temporary-chat-toggle.is-active:hover:not(:disabled) {
+    color: var(--green);
+  }
 }
 
 .temporary-chat-toggle.is-active {
@@ -602,6 +606,10 @@ button {
   .temporary-chat-toggle.is-touch-activating:not(:disabled) {
     color: #ffffff;
     background: rgba(148, 175, 188, 0.12);
+  }
+
+  .temporary-chat-toggle.is-touch-activating.is-touch-active-feedback:not(:disabled) {
+    color: var(--green);
   }
 }
 
