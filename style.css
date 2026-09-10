@@ -204,11 +204,6 @@ button {
   transition: max-width 0.26s ease, margin 0.26s ease;
 }
 
-.chat-app.is-sidebar-open .chat-container {
-  max-width: none;
-  margin: 0;
-}
-
 .conversation-sidebar {
   position: absolute;
   z-index: 4;
@@ -231,6 +226,7 @@ button {
   border-radius: 22px;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.26);
   transform: translateX(-18px);
+  will-change: transform, opacity;
   transition: opacity 0.2s ease, transform 0.26s ease;
 }
 
@@ -1035,11 +1031,6 @@ button.send-btn:focus-visible,
 @media (max-width: 760px) {
   .chat-app.is-sidebar-open {
     padding-left: 0;
-  }
-
-  .chat-app.is-sidebar-open .chat-container {
-    max-width: 720px;
-    margin: 0 auto;
   }
 
   .conversation-sidebar {
