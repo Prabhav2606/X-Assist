@@ -13,13 +13,27 @@ let activeConversationId = null;
 let conversations = [];
 const conversationHistoryCache = new Map();
 let conversationSidebarOpen = false;
+let headerMenuOpen = false;
 let isCreatingConversation = false;
 let isLoadingConversations = false;
 let conversationPendingDeletionId = null;
 let isDeletingConversation = false;
+let conversationContextMenuId = null;
+let conversationPendingRenameId = null;
+let isRenamingConversation = false;
+let conversationLongPressTimer = null;
+let conversationLongPressOrigin = null;
+let suppressConversationClickUntil = 0;
 let isSendingMessage = false;
+let isTemporaryChat = false;
+let lastSavedConversationId = null;
 const PASSWORD_REVEAL_DURATION = 400;
 const DELETE_CONVERSATION_TITLE_LIMIT = 36;
+const CONVERSATION_TITLE_MAX_LENGTH = 80;
+const CONVERSATION_LONG_PRESS_DELAY = 550;
+const CONVERSATION_LONG_PRESS_MOVE_TOLERANCE = 12;
+const TEMPORARY_CONVERSATION_ID = '__temporary_chat__';
+const TEMPORARY_CONTEXT_MESSAGE_LIMIT = 5;
 const passwordInputStates = new WeakMap();
 
 function getFirstName(name) {
@@ -28,7 +42,11 @@ function getFirstName(name) {
 }
 
 function sortConversations() {
-    conversations.sort((first, second) => Number(second.updated_at || 0) - Number(first.updated_at || 0));
+    conversations.sort((first, second) => {
+        const pinDifference = Number(Boolean(second.is_pinned)) - Number(Boolean(first.is_pinned));
+        if (pinDifference) return pinDifference;
+        return Number(second.updated_at || 0) - Number(first.updated_at || 0);
+    });
 }
 
 function setConversationStatus(message = '') {
@@ -74,9 +92,181 @@ function renderConversationHistory(history) {
 }
 
 function updateActiveConversationTitle() {
-    const title = getActiveConversation()?.title || 'New chat';
+    const title = isTemporaryChat ? 'Temporary chat' : getActiveConversation()?.title || 'New chat';
     const titleElement = document.getElementById('activeConversationTitle');
     if (titleElement) titleElement.textContent = title;
+}
+
+function updateTemporaryChatToggle() {
+    const toggle = document.getElementById('temporaryChatToggle');
+    if (!toggle) return;
+
+    const label = isTemporaryChat ? 'End temporary chat' : 'Start temporary chat';
+    toggle.classList.toggle('is-active', isTemporaryChat);
+    toggle.disabled = isSendingMessage;
+    toggle.setAttribute('aria-pressed', String(isTemporaryChat));
+    toggle.setAttribute('aria-label', label);
+    toggle.title = isTemporaryChat
+        ? 'Temporary chat is on. Click to return to saved chats'
+        : 'Start temporary chat';
+}
+
+function getTemporaryGreeting() {
+    return `Hello ${getFirstName(activeUserName)}! How can I help you today?`;
+}
+
+function getTemporaryHistoryForRequest() {
+    const history = conversationHistoryCache.get(TEMPORARY_CONVERSATION_ID) || [];
+    return history.slice(-(TEMPORARY_CONTEXT_MESSAGE_LIMIT - 1));
+}
+
+function startTemporaryChat() {
+    if (!activeUserId || isSendingMessage) return;
+
+    stopSpeechRecognition(true);
+    if (!isTemporaryChat && activeConversationId) {
+        lastSavedConversationId = activeConversationId;
+    }
+
+    isTemporaryChat = true;
+    activeConversationId = TEMPORARY_CONVERSATION_ID;
+    const history = cacheConversationHistory(TEMPORARY_CONVERSATION_ID, [
+        {
+            role: 'assistant',
+            content: [{ text: getTemporaryGreeting() }]
+        }
+    ]);
+
+    setConversationStatus('');
+    renderConversationList();
+    renderConversationHistory(history);
+    updateTemporaryChatToggle();
+
+    if (isCompactSidebar()) {
+        setConversationSidebarOpen(false);
+    }
+}
+
+async function endTemporaryChat() {
+    if (!isTemporaryChat || isSendingMessage) return;
+
+    stopSpeechRecognition(true);
+    isTemporaryChat = false;
+    conversationHistoryCache.delete(TEMPORARY_CONVERSATION_ID);
+
+    const savedConversation = conversations.find((conversation) => conversation.id === lastSavedConversationId)
+        || conversations[0]
+        || null;
+    activeConversationId = savedConversation?.id || null;
+    setConversationStatus('');
+    renderConversationList();
+    updateTemporaryChatToggle();
+
+    if (savedConversation) {
+        lastSavedConversationId = savedConversation.id;
+        await loadUserHistory(savedConversation.id);
+    } else {
+        await createNewChat();
+    }
+}
+
+async function toggleTemporaryChat() {
+    if (isSendingMessage) return;
+
+    if (isTemporaryChat) {
+        await endTemporaryChat();
+    } else {
+        startTemporaryChat();
+    }
+}
+
+function getConversationById(conversationId) {
+    return conversations.find((conversation) => conversation.id === conversationId) || null;
+}
+
+function clearConversationLongPress() {
+    if (conversationLongPressTimer) {
+        window.clearTimeout(conversationLongPressTimer);
+        conversationLongPressTimer = null;
+    }
+    conversationLongPressOrigin = null;
+}
+
+function closeConversationContextMenu() {
+    clearConversationLongPress();
+    conversationContextMenuId = null;
+
+    const menu = document.getElementById('conversationContextMenu');
+    if (!menu) return;
+
+    menu.classList.remove('is-open');
+    menu.setAttribute('aria-hidden', 'true');
+    menu.querySelectorAll('[role="menuitem"]').forEach((item) => {
+        item.tabIndex = -1;
+    });
+}
+
+function openConversationContextMenu(conversationId, clientX, clientY, shouldFocus = false) {
+    const conversation = getConversationById(conversationId);
+    const menu = document.getElementById('conversationContextMenu');
+    if (!conversation || !menu) return;
+
+    clearConversationLongPress();
+    setHeaderMenuOpen(false);
+    conversationContextMenuId = conversationId;
+
+    const pinLabel = conversation.is_pinned ? 'Unpin' : 'Pin';
+    const pinAction = document.getElementById('conversationPinAction');
+    const pinLabelElement = document.getElementById('conversationPinActionLabel');
+    if (pinAction) pinAction.setAttribute('aria-label', `${pinLabel} conversation: ${conversation.title}`);
+    if (pinLabelElement) pinLabelElement.textContent = pinLabel;
+
+    menu.classList.add('is-open');
+    menu.setAttribute('aria-hidden', 'false');
+    menu.querySelectorAll('[role="menuitem"]').forEach((item) => {
+        item.tabIndex = 0;
+    });
+
+    const menuBounds = menu.getBoundingClientRect();
+    const viewportPadding = 8;
+    const maxLeft = Math.max(viewportPadding, window.innerWidth - menuBounds.width - viewportPadding);
+    const maxTop = Math.max(viewportPadding, window.innerHeight - menuBounds.height - viewportPadding);
+    menu.style.left = `${Math.min(Math.max(viewportPadding, clientX), maxLeft)}px`;
+    menu.style.top = `${Math.min(Math.max(viewportPadding, clientY), maxTop)}px`;
+
+    if (shouldFocus) {
+        menu.querySelector('[role="menuitem"]')?.focus();
+    }
+}
+
+function startConversationLongPress(event, conversationId) {
+    if (event.pointerType === 'mouse') return;
+
+    clearConversationLongPress();
+    conversationLongPressOrigin = {
+        conversationId,
+        clientX: event.clientX,
+        clientY: event.clientY
+    };
+    conversationLongPressTimer = window.setTimeout(() => {
+        const origin = conversationLongPressOrigin;
+        conversationLongPressTimer = null;
+        if (!origin) return;
+
+        suppressConversationClickUntil = Date.now() + 750;
+        openConversationContextMenu(origin.conversationId, origin.clientX, origin.clientY);
+        if (navigator.vibrate) navigator.vibrate(8);
+    }, CONVERSATION_LONG_PRESS_DELAY);
+}
+
+function cancelConversationLongPressOnMove(event) {
+    if (!conversationLongPressOrigin) return;
+
+    const horizontalDistance = event.clientX - conversationLongPressOrigin.clientX;
+    const verticalDistance = event.clientY - conversationLongPressOrigin.clientY;
+    if (Math.hypot(horizontalDistance, verticalDistance) > CONVERSATION_LONG_PRESS_MOVE_TOLERANCE) {
+        clearConversationLongPress();
+    }
 }
 
 function renderConversationList() {
@@ -98,7 +288,6 @@ function renderConversationList() {
         const item = document.createElement('div');
         const button = document.createElement('button');
         const title = document.createElement('span');
-        const deleteButton = document.createElement('button');
         const isActive = conversation.id === activeConversationId;
 
         item.className = `conversation-list-item${isActive ? ' is-active' : ''}`;
@@ -106,28 +295,52 @@ function renderConversationList() {
         button.className = 'conversation-item';
         button.title = conversation.title;
         button.setAttribute('aria-current', isActive ? 'page' : 'false');
-        button.addEventListener('click', () => selectConversation(conversation.id));
+        button.addEventListener('click', (event) => {
+            if (Date.now() < suppressConversationClickUntil) {
+                event.preventDefault();
+                return;
+            }
+            selectConversation(conversation.id);
+        });
+        button.addEventListener('contextmenu', (event) => {
+            event.preventDefault();
+            openConversationContextMenu(conversation.id, event.clientX, event.clientY);
+        });
+        button.addEventListener('pointerdown', (event) => startConversationLongPress(event, conversation.id));
+        button.addEventListener('pointermove', cancelConversationLongPressOnMove);
+        button.addEventListener('pointerup', clearConversationLongPress);
+        button.addEventListener('pointercancel', clearConversationLongPress);
+        button.addEventListener('pointerleave', clearConversationLongPress);
+        button.addEventListener('keydown', (event) => {
+            if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return;
+
+            event.preventDefault();
+            const bounds = button.getBoundingClientRect();
+            openConversationContextMenu(
+                conversation.id,
+                bounds.left + Math.min(bounds.width / 2, 36),
+                bounds.top + Math.min(bounds.height / 2, 24),
+                true
+            );
+        });
 
         title.className = 'conversation-item-title';
         title.textContent = conversation.title;
         button.appendChild(title);
 
-        deleteButton.type = 'button';
-        deleteButton.className = 'conversation-delete-btn';
-        deleteButton.setAttribute('aria-label', `Delete conversation: ${conversation.title}`);
-        deleteButton.title = `Delete ${conversation.title}`;
-        deleteButton.innerHTML = `
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M3 6h18"></path>
-                <path d="M8 6V4h8v2"></path>
-                <path d="m19 6-1 14H6L5 6"></path>
-                <path d="M10 11v6M14 11v6"></path>
-            </svg>
-        `;
-        deleteButton.addEventListener('click', () => openDeleteConversationModal(conversation.id));
+        if (conversation.is_pinned) {
+            const pinIndicator = document.createElement('span');
+            pinIndicator.className = 'conversation-pin-indicator';
+            pinIndicator.setAttribute('aria-hidden', 'true');
+            pinIndicator.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="m8 3 8 0-1 6 3 3H6l3-3-1-6Z"></path>
+                    <path d="M12 15v6"></path>
+                </svg>`;
+            button.appendChild(pinIndicator);
+        }
 
         item.appendChild(button);
-        item.appendChild(deleteButton);
         list.appendChild(item);
     });
 
@@ -148,12 +361,132 @@ function upsertConversation(conversation) {
     renderConversationList();
 }
 
+async function updateConversationMetadata(conversationId, updates) {
+    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: activeUserId, ...updates })
+    });
+    const data = await response.json();
+    if (!response.ok || data.error || !data.conversation) {
+        throw new Error(data.error || 'Failed to update this conversation.');
+    }
+    return data.conversation;
+}
+
+async function toggleSelectedConversationPin() {
+    const conversation = getConversationById(conversationContextMenuId);
+    closeConversationContextMenu();
+    if (!conversation) return;
+
+    const requestedUserId = activeUserId;
+    try {
+        const updatedConversation = await updateConversationMetadata(conversation.id, {
+            is_pinned: !conversation.is_pinned
+        });
+        if (activeUserId !== requestedUserId) return;
+        upsertConversation(updatedConversation);
+    } catch (error) {
+        console.error('Failed to update conversation pin', error);
+        setConversationStatus(error.message || 'Unable to update this conversation.');
+    }
+}
+
+function showRenameConversationError(message = '') {
+    const errorMessage = document.getElementById('renameConversationError');
+    if (errorMessage) errorMessage.textContent = message;
+}
+
+function clearRenameConversationError() {
+    showRenameConversationError();
+}
+
+function openRenameConversationModal() {
+    const conversation = getConversationById(conversationContextMenuId);
+    closeConversationContextMenu();
+    if (!conversation) return;
+
+    conversationPendingRenameId = conversation.id;
+    const input = document.getElementById('renameConversationInput');
+    input.value = conversation.title;
+    clearRenameConversationError();
+    document.getElementById('renameConversationModal').style.display = 'flex';
+    window.setTimeout(() => {
+        input.focus();
+        input.select();
+    }, 0);
+}
+
+function closeRenameConversationModal() {
+    if (isRenamingConversation) return;
+
+    conversationPendingRenameId = null;
+    clearRenameConversationError();
+    document.getElementById('renameConversationModal').style.display = 'none';
+}
+
+async function confirmRenameConversation() {
+    const conversationId = conversationPendingRenameId;
+    const input = document.getElementById('renameConversationInput');
+    const confirmButton = document.getElementById('renameConversationConfirmBtn');
+    const title = input.value.replace(/\s+/g, ' ').trim();
+
+    if (!conversationId || isRenamingConversation) return;
+    if (!title) {
+        showRenameConversationError('Enter a conversation title.');
+        input.focus();
+        return;
+    }
+    if (title.length > CONVERSATION_TITLE_MAX_LENGTH) {
+        showRenameConversationError(`Conversation titles can be up to ${CONVERSATION_TITLE_MAX_LENGTH} characters.`);
+        input.focus();
+        return;
+    }
+
+    const requestedUserId = activeUserId;
+    const originalButtonLabel = confirmButton?.textContent;
+    isRenamingConversation = true;
+    if (confirmButton) {
+        confirmButton.disabled = true;
+        confirmButton.textContent = 'Saving...';
+    }
+    clearRenameConversationError();
+
+    try {
+        const updatedConversation = await updateConversationMetadata(conversationId, { title });
+        if (activeUserId !== requestedUserId) return;
+
+        upsertConversation(updatedConversation);
+        conversationPendingRenameId = null;
+        document.getElementById('renameConversationModal').style.display = 'none';
+    } catch (error) {
+        console.error('Failed to rename conversation', error);
+        showRenameConversationError(error.message || 'Unable to rename this conversation.');
+    } finally {
+        isRenamingConversation = false;
+        if (confirmButton) {
+            confirmButton.disabled = false;
+            confirmButton.textContent = originalButtonLabel;
+        }
+    }
+}
+
+function deleteSelectedConversation() {
+    const conversationId = conversationContextMenuId;
+    closeConversationContextMenu();
+    if (conversationId) openDeleteConversationModal(conversationId);
+}
+
 function isCompactSidebar() {
     return window.matchMedia('(max-width: 760px)').matches;
 }
 
 function setConversationSidebarOpen(shouldOpen) {
     conversationSidebarOpen = Boolean(shouldOpen);
+    closeConversationContextMenu();
+    if (conversationSidebarOpen) {
+        setHeaderMenuOpen(false);
+    }
 
     const chatApp = document.getElementById('chatApp');
     const sidebar = document.getElementById('conversationSidebar');
@@ -171,6 +504,31 @@ function setConversationSidebarOpen(shouldOpen) {
 
 function toggleConversationSidebar() {
     setConversationSidebarOpen(!conversationSidebarOpen);
+}
+
+function setHeaderMenuOpen(shouldOpen) {
+    headerMenuOpen = Boolean(shouldOpen);
+    if (headerMenuOpen) closeConversationContextMenu();
+
+    const menu = document.getElementById('headerActionsMenu');
+    const toggle = document.getElementById('headerMenuToggle');
+    if (menu) {
+        menu.classList.toggle('is-open', headerMenuOpen);
+        menu.setAttribute('aria-hidden', String(!headerMenuOpen));
+        menu.querySelectorAll('[role="menuitem"]').forEach((item) => {
+            item.tabIndex = headerMenuOpen ? 0 : -1;
+        });
+    }
+    if (toggle) {
+        const label = headerMenuOpen ? 'Close chat actions' : 'Open chat actions';
+        toggle.setAttribute('aria-expanded', String(headerMenuOpen));
+        toggle.setAttribute('aria-label', label);
+        toggle.title = label;
+    }
+}
+
+function toggleHeaderMenu() {
+    setHeaderMenuOpen(!headerMenuOpen);
 }
 
 async function loadConversations(includeActiveHistory = false) {
@@ -194,6 +552,10 @@ async function loadConversations(includeActiveHistory = false) {
 async function initializeConversations() {
     const signedInUserId = activeUserId;
     const newChatButton = document.getElementById('newChatBtn');
+    isTemporaryChat = false;
+    lastSavedConversationId = null;
+    conversationHistoryCache.delete(TEMPORARY_CONVERSATION_ID);
+    updateTemporaryChatToggle();
     isLoadingConversations = true;
     if (newChatButton) newChatButton.disabled = true;
 
@@ -210,6 +572,7 @@ async function initializeConversations() {
 
         const activeConversation = data.active_conversation || conversations[0];
         activeConversationId = activeConversation.id;
+        lastSavedConversationId = activeConversation.id;
         renderConversationList();
 
         if (data.active_conversation?.id === activeConversation.id && Array.isArray(data.history)) {
@@ -229,6 +592,11 @@ async function initializeConversations() {
 }
 
 async function createNewChat() {
+    if (isTemporaryChat) {
+        startTemporaryChat();
+        return;
+    }
+
     if (!activeUserId || isCreatingConversation || isLoadingConversations) return;
 
     const requestedUserId = activeUserId;
@@ -250,6 +618,7 @@ async function createNewChat() {
         if (activeUserId !== requestedUserId) return;
 
         activeConversationId = data.conversation.id;
+        lastSavedConversationId = activeConversationId;
         upsertConversation(data.conversation);
         if (Array.isArray(data.history)) {
             renderConversationHistory(cacheConversationHistory(activeConversationId, data.history));
@@ -273,7 +642,14 @@ async function selectConversation(conversationId, closeCompactSidebar = true) {
     if (!conversationId || !activeUserId) return;
 
     stopSpeechRecognition(true);
+    closeConversationContextMenu();
+    if (isTemporaryChat) {
+        isTemporaryChat = false;
+        conversationHistoryCache.delete(TEMPORARY_CONVERSATION_ID);
+        updateTemporaryChatToggle();
+    }
     activeConversationId = conversationId;
+    lastSavedConversationId = conversationId;
     renderConversationList();
     setConversationStatus('');
 
@@ -842,6 +1218,7 @@ async function signIn() {
 }
 
 function deleteAccount() {
+    setHeaderMenuOpen(false);
     // Show the model and clear out any old text
     document.getElementById('deleteModel').style.display = 'flex';
     resetDeletePasswordField();
@@ -867,6 +1244,8 @@ function closeModalOnBackdrop(event) {
         closeSignOutModal();
     } else if (modalId === 'deleteConversationModal') {
         closeDeleteConversationModal();
+    } else if (modalId === 'renameConversationModal') {
+        closeRenameConversationModal();
     }
 }
 
@@ -926,6 +1305,7 @@ async function confirmDeleteAccount() {
 }
 
 function signOut() {
+    setHeaderMenuOpen(false);
     document.getElementById('signOutModal').style.display = 'flex';
 }
 
@@ -993,7 +1373,14 @@ function performSignOut() {
     isLoadingConversations = false;
     conversationPendingDeletionId = null;
     isDeletingConversation = false;
+    conversationPendingRenameId = null;
+    isRenamingConversation = false;
     isSendingMessage = false;
+    isTemporaryChat = false;
+    lastSavedConversationId = null;
+    closeConversationContextMenu();
+    document.getElementById('renameConversationModal').style.display = 'none';
+    updateTemporaryChatToggle();
     setConversationSidebarOpen(false);
     renderConversationList();
     setConversationStatus('');
@@ -1024,6 +1411,14 @@ function performSignOut() {
 
 async function loadUserHistory(conversationId = activeConversationId, forceRefresh = false) {
     if (!activeUserId || !conversationId) return;
+
+    if (conversationId === TEMPORARY_CONVERSATION_ID) {
+        const history = conversationHistoryCache.get(TEMPORARY_CONVERSATION_ID) || [];
+        if (activeConversationId === TEMPORARY_CONVERSATION_ID) {
+            renderConversationHistory(history);
+        }
+        return history;
+    }
 
     const requestedUserId = activeUserId;
     const cachedHistory = conversationHistoryCache.get(conversationId);
@@ -1129,6 +1524,9 @@ async function confirmDeleteConversation() {
         const wasActiveConversation = activeConversationId === conversationId;
         conversations = conversations.filter((conversation) => conversation.id !== conversationId);
         conversationHistoryCache.delete(conversationId);
+        if (lastSavedConversationId === conversationId) {
+            lastSavedConversationId = null;
+        }
         conversationPendingDeletionId = null;
         document.getElementById('deleteConversationModal').style.display = 'none';
 
@@ -1144,6 +1542,7 @@ async function confirmDeleteConversation() {
         const nextConversation = conversations[0];
         if (nextConversation) {
             activeConversationId = nextConversation.id;
+            lastSavedConversationId = nextConversation.id;
             renderConversationList();
             await loadUserHistory(nextConversation.id);
         } else {
@@ -1163,7 +1562,12 @@ async function confirmDeleteConversation() {
 }
 
 function clearChat() {
+    setHeaderMenuOpen(false);
     if (!activeConversationId) return;
+    if (isSendingMessage) {
+        setConversationStatus('Wait for the current reply before clearing this chat.');
+        return;
+    }
     document.getElementById('clearChatModal').style.display = 'flex';
 }
 
@@ -1174,6 +1578,11 @@ function closeClearChatModal() {
 async function confirmClearChat() {
     closeClearChatModal();
     if (!activeConversationId) return;
+
+    if (isTemporaryChat) {
+        startTemporaryChat();
+        return;
+    }
 
     const conversationId = activeConversationId;
     const requestedUserId = activeUserId;
@@ -1222,9 +1631,12 @@ async function sendMessage() {
     }
 
     const conversationId = activeConversationId;
+    const isTemporaryRequest = isTemporaryChat && conversationId === TEMPORARY_CONVERSATION_ID;
+    const temporaryHistory = isTemporaryRequest ? getTemporaryHistoryForRequest() : null;
     const requestedUserId = activeUserId;
     const chatBox = document.getElementById('chatBox');
     isSendingMessage = true;
+    updateTemporaryChatToggle();
 
     appendMessage(messageText, 'user');
     appendCachedMessage(conversationId, messageText, 'user');
@@ -1232,21 +1644,28 @@ async function sendMessage() {
     const loadingDiv = appendMessage('Thinking...', 'assistant');
 
     try {
+        const requestBody = {
+            message: messageText,
+            user_id: requestedUserId
+        };
+        if (isTemporaryRequest) {
+            requestBody.temporary = true;
+            requestBody.history = temporaryHistory;
+        } else {
+            requestBody.conversation_id = conversationId;
+        }
+
         const response = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                message: messageText,
-                user_id: activeUserId,
-                conversation_id: conversationId
-            })
+            body: JSON.stringify(requestBody)
         });
         const data = await response.json();
         if (!response.ok || data.error || !data.reply) {
             throw new Error(data.error || 'Failed to get response.');
         }
         if (activeUserId !== requestedUserId) return;
-        if (data.conversation) {
+        if (!isTemporaryRequest && data.conversation) {
             upsertConversation(data.conversation);
         }
 
@@ -1260,7 +1679,9 @@ async function sendMessage() {
         }
     }
     catch (error) {
-        conversationHistoryCache.delete(conversationId);
+        if (!isTemporaryRequest) {
+            conversationHistoryCache.delete(conversationId);
+        }
         if (activeConversationId === conversationId) {
             loadingDiv.innerText = error.message === 'Failed to get response.'
                 ? 'Error connecting to server.'
@@ -1268,6 +1689,7 @@ async function sendMessage() {
         }
     } finally {
         isSendingMessage = false;
+        updateTemporaryChatToggle();
     }
 
     if (activeConversationId === conversationId) {
@@ -1294,9 +1716,28 @@ document.addEventListener('DOMContentLoaded', () => {
     initializePasswordCharacterReveal();
 
     document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && conversationContextMenuId) {
+            closeConversationContextMenu();
+        }
+        if (event.key === 'Escape' && headerMenuOpen) {
+            setHeaderMenuOpen(false);
+        }
         if (event.key === 'Escape' && conversationSidebarOpen) {
             setConversationSidebarOpen(false);
         }
     });
+
+    document.addEventListener('click', (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        if (headerMenuOpen && !target?.closest('#headerMenu')) {
+            setHeaderMenuOpen(false);
+        }
+        if (conversationContextMenuId && !target?.closest('#conversationContextMenu')) {
+            closeConversationContextMenu();
+        }
+    });
+
+    window.addEventListener('resize', closeConversationContextMenu);
+    document.addEventListener('scroll', closeConversationContextMenu, true);
 });
 initializeSpeechRecognition();
