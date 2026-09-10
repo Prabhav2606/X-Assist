@@ -587,9 +587,11 @@ button {
   height: 17px;
 }
 
-.temporary-chat-toggle:hover:not(:disabled) {
-  color: #ffffff;
-  background: rgba(148, 175, 188, 0.12);
+@media (hover: hover) {
+  .temporary-chat-toggle:hover:not(:disabled) {
+    color: #ffffff;
+    background: rgba(148, 175, 188, 0.12);
+  }
 }
 
 .temporary-chat-toggle.is-active {
