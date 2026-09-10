@@ -22,6 +22,7 @@ CONVERSATIONS_TABLE = "NovaChatConversations"
 CONVERSATION_MESSAGES_TABLE = "NovaChatConversationMessages"
 DEFAULT_CONVERSATION_TITLE = "New chat"
 MODEL_CONTEXT_MESSAGE_LIMIT = 5
+MAX_CONVERSATION_TITLE_LENGTH = 80
 
 bedrock_client = boto3.client("bedrock-runtime", region_name=REGION)
 dynamodb_client = boto3.client("dynamodb", region_name=REGION)
@@ -120,6 +121,7 @@ def to_public_conversation(conversation):
     return {
         "id": conversation["conversation_id"],
         "title": conversation.get("title", DEFAULT_CONVERSATION_TITLE),
+        "is_pinned": bool(conversation.get("is_pinned", False)),
         "created_at": float(conversation.get("created_at", 0)),
         "updated_at": float(conversation.get("updated_at", 0))
     }
@@ -132,6 +134,41 @@ def to_history_message(message):
 
 def to_history_messages(messages):
     return [to_history_message(message) for message in messages]
+
+def build_temporary_model_messages(history, new_message_text):
+    """Build a small, request-only context window without touching DynamoDB."""
+    model_messages = []
+    if isinstance(history, list):
+        for message in history[-MODEL_CONTEXT_MESSAGE_LIMIT:]:
+            if not isinstance(message, dict):
+                continue
+
+            role = message.get("role")
+            content = message.get("content")
+            if role not in ("user", "assistant") or not isinstance(content, list) or not content:
+                continue
+
+            first_content = content[0]
+            text = first_content.get("text") if isinstance(first_content, dict) else None
+            if not isinstance(text, str) or not text.strip():
+                continue
+
+            model_messages.append({
+                "role": role,
+                "content": [{"text": text.strip()}]
+            })
+
+    model_messages.append({
+        "role": "user",
+        "content": [{"text": new_message_text}]
+    })
+    model_messages = model_messages[-MODEL_CONTEXT_MESSAGE_LIMIT:]
+
+    # Nova message sequences must begin with a user message.
+    while model_messages and model_messages[0]["role"] == "assistant":
+        model_messages.pop(0)
+
+    return model_messages
 
 def make_conversation_message(user_id, conversation_id, role, text, timestamp=None):
     return {
@@ -153,7 +190,10 @@ def get_user_conversations(user_id):
     conversations = get_all_query_items(table, Key("user_id").eq(user_id))
     return sorted(
         conversations,
-        key=lambda conversation: conversation.get("updated_at", Decimal("0")),
+        key=lambda conversation: (
+            bool(conversation.get("is_pinned", False)),
+            conversation.get("updated_at", Decimal("0"))
+        ),
         reverse=True
     )
 
@@ -186,6 +226,36 @@ def update_conversation_activity(user_id, conversation_id, updated_at, title=Non
         ExpressionAttributeValues=expression_values
     )
 
+def update_conversation_metadata(user_id, conversation, title=None, is_pinned=None):
+    updates = []
+    expression_values = {}
+
+    if title is not None:
+        updates.append("title = :title")
+        expression_values[":title"] = title
+    if is_pinned is not None:
+        updates.append("is_pinned = :is_pinned")
+        expression_values[":is_pinned"] = is_pinned
+
+    if not updates:
+        return conversation
+
+    get_dynamo_resource().Table(CONVERSATIONS_TABLE).update_item(
+        Key={
+            "user_id": user_id,
+            "conversation_id": conversation["conversation_id"]
+        },
+        UpdateExpression=f"SET {', '.join(updates)}",
+        ExpressionAttributeValues=expression_values
+    )
+
+    updated_conversation = {**conversation}
+    if title is not None:
+        updated_conversation["title"] = title
+    if is_pinned is not None:
+        updated_conversation["is_pinned"] = is_pinned
+    return updated_conversation
+
 def save_conversation_message(user_id, conversation, role, text):
     timestamp = current_timestamp()
     conversation_id = conversation["conversation_id"]
@@ -216,6 +286,7 @@ def create_conversation(user_id):
         "user_id": user_id,
         "conversation_id": conversation_id,
         "title": DEFAULT_CONVERSATION_TITLE,
+        "is_pinned": False,
         "created_at": created_at,
         "updated_at": created_at
     }
@@ -485,6 +556,45 @@ def delete_saved_conversation(conversation_id):
         print(f"DynamoDB delete conversation error: {error}")
         return jsonify({"error": "Failed to delete this conversation!"}), 500
 
+@app.route("/api/conversations/<conversation_id>", methods=["PATCH"])
+def update_saved_conversation(conversation_id):
+    data = request.get_json(silent=True) or {}
+    user_id = data.get("user_id")
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    title = data.get("title") if "title" in data else None
+    is_pinned = data.get("is_pinned") if "is_pinned" in data else None
+    if title is None and is_pinned is None:
+        return jsonify({"error": "No conversation update was provided"}), 400
+    if title is not None:
+        if not isinstance(title, str):
+            return jsonify({"error": "Conversation title must be text"}), 400
+        title = " ".join(title.split())
+        if not title:
+            return jsonify({"error": "Enter a conversation title"}), 400
+        if len(title) > MAX_CONVERSATION_TITLE_LENGTH:
+            return jsonify({
+                "error": f"Conversation titles can be up to {MAX_CONVERSATION_TITLE_LENGTH} characters"
+            }), 400
+    if is_pinned is not None and not isinstance(is_pinned, bool):
+        return jsonify({"error": "Pin state must be true or false"}), 400
+
+    try:
+        conversation = get_conversation(user_id, conversation_id)
+        if not conversation:
+            return jsonify({"error": "Conversation not found!"}), 404
+        conversation = update_conversation_metadata(
+            user_id,
+            conversation,
+            title=title,
+            is_pinned=is_pinned
+        )
+        return jsonify({"conversation": to_public_conversation(conversation)})
+    except Exception as error:
+        print(f"DynamoDB update conversation error: {error}")
+        return jsonify({"error": "Failed to update this conversation!"}), 500
+
 @app.route("/api/history", methods=["GET"])
 def get_history():
     user_id = request.args.get("user_id")
@@ -533,31 +643,36 @@ def chat():
     new_message_text = data.get("message", "").strip()
     user_id = data.get("user_id")
     conversation_id = data.get("conversation_id")
+    is_temporary = data.get("temporary") is True
 
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
-    if not conversation_id:
-        return jsonify({"error": "A conversation is required"}), 400
     if not new_message_text:
         return jsonify({"error": "No message provided"}), 400
 
-    conversation = get_conversation(user_id, conversation_id)
-    if not conversation:
-        return jsonify({"error": "Conversation not found!"}), 404
+    if is_temporary:
+        api_messages = build_temporary_model_messages(data.get("history"), new_message_text)
+    else:
+        if not conversation_id:
+            return jsonify({"error": "A conversation is required"}), 400
 
-    conversation, _ = save_conversation_message(
-        user_id,
-        conversation,
-        "user",
-        new_message_text
-    )
-    recent_messages = get_recent_conversation_messages(
-        conversation_id,
-        MODEL_CONTEXT_MESSAGE_LIMIT
-    )
-    api_messages = to_history_messages(recent_messages)
-    if api_messages and api_messages[0]["role"] == "assistant":
-        api_messages.pop(0)
+        conversation = get_conversation(user_id, conversation_id)
+        if not conversation:
+            return jsonify({"error": "Conversation not found!"}), 404
+
+        conversation, _ = save_conversation_message(
+            user_id,
+            conversation,
+            "user",
+            new_message_text
+        )
+        recent_messages = get_recent_conversation_messages(
+            conversation_id,
+            MODEL_CONTEXT_MESSAGE_LIMIT
+        )
+        api_messages = to_history_messages(recent_messages)
+        if api_messages and api_messages[0]["role"] == "assistant":
+            api_messages.pop(0)
 
     payload = {
         "messages": api_messages,
@@ -570,6 +685,9 @@ def chat():
         )
         response_body = json.loads(response['body'].read())
         assistant_reply = response_body['output']['message']['content'][0]['text']
+        if is_temporary:
+            return jsonify({"reply": assistant_reply, "temporary": True})
+
         conversation, _ = save_conversation_message(
             user_id,
             conversation,
